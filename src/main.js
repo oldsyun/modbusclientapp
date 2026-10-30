@@ -163,12 +163,12 @@ function onJoin() {
         // 连上就主动要一次说明书：网关会立刻回 state{role:"gateway"}
         setTimeout(() => {
           if (app.sess && app.sess.isConnected() && !app.gw) {
-            send('sync.request', {}, { quiet: true }).catch(() => {});
+            send('sync.request', {}, { quiet: true }).then(onSyncData).catch(onSyncErr);
           }
         }, 350);
       }
     },
-    onReconnect: () => send('sync.request', {}, { quiet: true }).catch(() => {}),
+    onReconnect: () => send('sync.request', {}, { quiet: true }).then(onSyncData).catch(onSyncErr),
     onError: (e) => {
       setNotice('MQTT：' + ((e && e.message) || '链路错误'));
       renderHeader();
@@ -180,7 +180,7 @@ function onJoin() {
   $('sidInput').blur();
   $('sidErr').textContent = '';
   render();
-  pushOp('info', '接入会话 ' + sid, '等待现场确认 / 模块网关上线');
+  pushOp('info', '接入会话 ' + sid, '等待现场确认 / 网关（ESP32 直连或 BLE 小程序代理）上线');
 }
 
 function closeSession(silent) {
@@ -195,6 +195,7 @@ function closeSession(silent) {
   app.pageId = '';
   app.widgets = [];
   app.busyCount = 0;
+  lastGatewaySync = 0;
   app.scan = { running: false, cur: 0, found: 0, list: [], start: 1, end: 247, reg: 0, timeout: 80, done: false };
   app.modscan.rows = [];
   app.modscan.prev = {};
@@ -213,8 +214,8 @@ function closeSession(silent) {
 function onEndSession() {
   if (!app.joined) return;
   if (!confirm('结束协助后本次远程通道立即关闭，需要重新要码才能接入。确定？')) return;
-  // 网关不认 assist.kick（模块由现场 BLE 控制），手机托管才需要通知现场收摊
-  if (!app.gw) send('assist.kick', {}, { quiet: true, noRetry: true }).catch(() => {});
+  // ESP32 直连网关不认 assist.kick（模块由现场 BLE 控制）；手机托管与 BLE 代理都要通知现场收摊
+  if (!app.gw || gwLink() === 'ble') send('assist.kick', {}, { quiet: true, noRetry: true }).catch(() => {});
   setTimeout(() => closeSession(), 150);
 }
 
@@ -225,7 +226,7 @@ function onLeave() { closeSession(); }
    ================================================================== */
 function isGatewayStatus(o) {
   if (!o || o.role !== 'local' || o.action === 'leave') return false;
-  return o.gw === 1 || o.tool === 'SYCC-GW' ||
+  return o.gw === 1 || o.ble === 1 || o.tool === 'SYCC-GW' ||
     (o.data && Number(o.data.host) === 1) || Number(o.host) === 1;
 }
 
@@ -241,9 +242,12 @@ function applyPeerStatus(o) {
   }
   if (isGatewayStatus(o)) {
     ensureGateway({
-      gateway: o.tool || 'SYCC-GW',
+      gateway: o.gateway || o.tool || 'SYCC-GW',
       perm: o.perm,
-      host: 1
+      host: 1,
+      link: o.link,
+      ble: o.ble,
+      uart: o.uart
     });
   }
   renderHeader();
@@ -252,20 +256,31 @@ function applyPeerStatus(o) {
 function ensureGateway(pl) {
   const first = !app.gw;
   app.mirror = false;
-  app.gw = app.gw || { on: true, name: 'SYCC-GW', fw: '', ip: '', perm: 2, host: true, uart: null };
+  app.gw = app.gw || { on: true, name: 'SYCC-GW', fw: '', ip: '', perm: 2, host: true, uart: null, link: 'wifi', bleDown: false };
   app.gw.on = true;
+  if (Number(pl.ble) === 0) app.gw.bleDown = true;
+  else if (pl.ble !== undefined) app.gw.bleDown = false;
   if (pl.gateway) app.gw.name = pl.gateway;
   if (pl.fw) app.gw.fw = pl.fw;
   if (pl.ip) app.gw.ip = pl.ip;
   if (pl.perm) app.gw.perm = Number(pl.perm) || app.gw.perm;
+  if (pl.link) app.gw.link = pl.link;
+  else if (Number(pl.ble) === 1) app.gw.link = 'ble';
+  if (pl.uart && pl.uart.baud && !app.gw.uart) {
+    const u = normalizeUart(pl.uart);
+    if (u) app.gw.uart = u;
+  }
   app.gw.host = true;
 
   if (first) {
     app.activeTab = 'tools';
     setBusy(0);
-    app.cmd = { text: '网关已上线 · 桌面端优先接管（小程序 remote 暂停）', pending: false };
-    toast('检测到 ESP32 模块托管，已进入网关工作台', true);
-    pushOp('ok', 'ESP32 模块托管已接入', '网关 ' + app.gw.name + (app.gw.fw ? ' · v' + app.gw.fw : ''));
+    app.cmd = {
+      text: gwLinkLabel() + ' 已上线 · 桌面端优先接管（小程序 remote 暂停）',
+      pending: false
+    };
+    toast('检测到' + gwLinkLabel() + '，已进入网关工作台', true);
+    pushOp('ok', gwLinkLabel() + '已接入', '网关 ' + app.gw.name + (app.gw.fw ? ' · v' + app.gw.fw : ''));
     syncGateway();
     renderAll();
     return;
@@ -280,7 +295,29 @@ function syncGateway() {
   const now = Date.now();
   if (now - lastGatewaySync < 800) return;
   lastGatewaySync = now;
-  send('sync.request', {}, { quiet: true }).catch(() => {});
+  send('sync.request', {}, { quiet: true }).then(onSyncData).catch(onSyncErr);
+}
+
+// sync 成功但现场还没点「允许」：顶栏保持一句等待，不要假装已经接入
+function onSyncData(data) {
+  if (data && data.awaitAllow) {
+    app.cmd = { text: '等待现场在小程序里点「允许」…', pending: true };
+    renderStatusbar();
+  }
+}
+
+// sync 被现场挡下时给一句人话：最常见的是"还没点允许"，不是链路坏了
+function onSyncErr(err) {
+  if (!err) return;
+  if (err.code === 403) {
+    app.cmd = { text: '等待现场在小程序里点「允许」…', pending: true };
+    renderStatusbar();
+    return;
+  }
+  if (err.code === 409) {
+    app.cmd = { text: '现场状态不允许同步：' + (err.message || ''), pending: false };
+    renderStatusbar();
+  }
 }
 
 function onStateMsg(o) {
@@ -290,15 +327,14 @@ function onStateMsg(o) {
   if (pl.scan) { onScanState(pl); return; }
 
   if (o.type === 'page') {
+    // 网关链路（ESP32 直连 / BLE 小程序代理）不消费 pageSchema：保持网关工作台
+    if (gwReady()) return;
     app.mirror = true;
     app.pageId = pl.page || '';
     app.widgets = Array.isArray(pl.widgets) ? pl.widgets : [];
-    if (app.gw) app.gw.host = true;   // 托管中也会推页面？保持网关视图
-    if (!app.gw) {
-      app.activeTab = tabOfPage(app.pageId);
-      app.cmd = { text: '现场页面已同步：' + (pl.title || app.pageId), pending: false };
-      renderAll();
-    }
+    app.activeTab = tabOfPage(app.pageId);
+    app.cmd = { text: '现场页面已同步：' + (pl.title || app.pageId), pending: false };
+    renderAll();
     return;
   }
 
@@ -324,7 +360,23 @@ function onStateMsg(o) {
 }
 
 function applyGatewayDetail(pl) {
+  const wasDown = !!(app.gw && app.gw.bleDown);
   ensureGateway(pl);
+  if (pl.link) app.gw.link = pl.link;
+  else if (Number(pl.ble) === 1) app.gw.link = 'ble';
+  if (Number(pl.ble) === 0) {
+    app.gw.bleDown = true;
+    if (!wasDown) {
+      toast('现场蓝牙已断开，BLE 小程序代理暂停；恢复连接后自动继续', false);
+      pushOp('warn', '现场蓝牙已断开', '网关命令暂不可用；恢复蓝牙连接后自动恢复');
+    }
+    renderHeader();
+    return;
+  }
+  if (wasDown && Number(pl.ble) === 1) {
+    toast('现场蓝牙已恢复，BLE 小程序代理继续', true);
+    pushOp('ok', '现场蓝牙已恢复', '网关工作台继续可用');
+  }
   const u = pl.uart && pl.uart.baud ? normalizeUart(pl.uart) : null;
   if (u) {
     app.gw.uart = u;
@@ -338,6 +390,7 @@ function applyGatewayDetail(pl) {
   if (app.activeTab === 'module') renderModuleLive();
   pushOp('info', '已同步网关说明书', [
     app.gw.name,
+    gwLinkLabel(),
     app.gw.fw ? 'v' + app.gw.fw : '',
     app.gw.ip,
     u ? (u.baud + ' ' + u.dataBits + u.parity + u.stopBits) : ''
@@ -432,6 +485,11 @@ function send(type, payload, opts) {
 
 function gwReady() { return !!(app.gw && app.gw.on); }
 
+/* 两条现场链路的文案：业务/工作台完全同源，只有"数据从哪来"不同 */
+function gwLink() { return (app.gw && app.gw.link) || 'wifi'; }
+function gwLinkLabel() { return gwLink() === 'ble' ? '蓝牙小程序代理' : 'ESP32 WiFi 直连'; }
+function gwLinkShort() { return gwLink() === 'ble' ? '蓝牙代理' : '模块托管'; }
+
 /** 客户端组 RTU 帧 → raw.tx；固件只做门禁与透传，返回原始 rx */
 async function rawTx(frame, expectLen, timeoutMs) {
   const hex = MB.bytesToHex(frame, ' ');
@@ -509,10 +567,11 @@ function renderHeader() {
   pServer.className = 't-pill ' + (st === 'online' ? 'ok' : (st === 'idle' || st === 'closed' ? '' : 'warn'));
 
   const online = !!app.peerOnline;
+  const bleDown = !!(app.gw && app.gw.bleDown);
   $('txtFieldStatus').textContent = online
-    ? ('现场在线' + (app.gw ? ' · 模块托管' : ''))
+    ? (app.gw ? (bleDown ? '现场蓝牙断开 · BLE 代理暂停' : ('现场在线 · ' + gwLinkShort())) : '现场在线')
     : (app.joined ? '现场离线 · 等待重连' : '现场离线');
-  $('pillField').className = 't-pill ' + (online ? 'ok' : 'warn');
+  $('pillField').className = 't-pill ' + (online && !bleDown ? 'ok' : 'warn');
 
   const u = app.gw && app.gw.uart;
   $('hdrUartSummary').textContent = u
@@ -627,7 +686,7 @@ function renderDock() {
 
   const pktList = $('packetList');
   if (!app.packets.length) {
-    pktList.innerHTML = '<div class="empty-state"><b>暂无报文</b>接入模块托管后，485 收发的每一帧都会出现在这里。</div>';
+    pktList.innerHTML = '<div class="empty-state"><b>暂无报文</b>接入网关链路后，485 收发的每一帧都会出现在这里。</div>';
   } else {
     pktList.innerHTML = app.packets.map((p) => {
       const cls = p.dir === 'TX' ? 'tx' : (p.dir === 'RX' ? 'rx' : 'err');
@@ -706,10 +765,11 @@ function buildJoinHint() {
   return '<div class="join-hint">' +
     '<h3>接入现场调试通道</h3>' +
     '<p>在顶部「会话码」里填现场给出的 7 位码（大写字母 / 数字，不含 O/0/I/1）。' +
-    '现场手机托管和 ESP32 模块托管都能接：模块托管时现场手机可以离场，桌面端直接接管 485 总线。</p>' +
+    '两种现场形态都接：ESP32 自己连云端时桌面端直接接管 485 总线；现场小程序用蓝牙连模块、再由手机连云端时，' +
+    '桌面端复用同一套网关工作台（BLE 小程序代理），无需现场离场。</p>' +
     '<div class="join-steps">' +
     '<div class="join-step"><i>1</i><span>现场在小程序里开启「远程托管」，拿到 7 位远程码。</span></div>' +
-    '<div class="join-step"><i>2</i><span>把码填入顶部，点「接入」；手机托管需现场点「允许」，模块托管自动放行。</span></div>' +
+    '<div class="join-step"><i>2</i><span>把码填入顶部，点「接入」；手机托管 / BLE 代理需现场点「允许」，ESP32 直连自动放行。</span></div>' +
     '<div class="join-step"><i>3</i><span>接入后左栏就是完整工作台：扫描 / Modscan / 串口 / RTU / 模块参数，右栏实时报文流。</span></div>' +
     '</div>' +
     '<div class="join-note">当前 Broker：<b class="mono">' + esc(buildWsUrl(MQTT_CONFIG_FROM(loadBroker())) || '未配置（点右上角「设置」）') + '</b>。' +
@@ -748,20 +808,25 @@ function buildToolsView() {
     {
       key: 'tools', title: '现场镜像页（手机托管）', icon: '镜',
       desc: '现场手机托管时，这里显示现场当前页面的镜像控件，点一下由现场执行。',
-      stat: app.mirror ? ('现场页面：' + (app.pageId || '—')) : (gwReady() ? '模块托管下不需要镜像' : '等待现场页面')
+      stat: app.mirror ? ('现场页面：' + (app.pageId || '—')) : (gwReady() ? (gwLinkShort() + '下不需要镜像') : '等待现场页面')
     }
   ];
 
   return '<div class="w-card mark-ok">' +
     '<div class="w-card-hd"><div class="w-card-title">链路与运行态' +
-    '<span class="w-card-sub">' + (gwReady() ? 'ESP32 模块托管 · 桌面端优先' : '现场手机托管 · 镜像操作') + '</span></div>' +
-    '<span class="tag ' + (app.peerOnline ? 'ok' : 'warn') + '">' + (app.peerOnline ? '现场在线' : '现场离线') + '</span></div>' +
+    '<span class="w-card-sub">' + (gwReady() ? (gwLinkLabel() + ' · 桌面端优先 · 同一套网关工作台') : '现场手机托管 · 镜像操作') + '</span></div>' +
+    '<span class="tag ' + (app.peerOnline && !(app.gw && app.gw.bleDown) ? 'ok' : 'warn') + '">' +
+    (app.gw && app.gw.bleDown ? '蓝牙断开' : (app.peerOnline ? '现场在线' : '现场离线')) + '</span></div>' +
     '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">' +
     '<div><div style="font-size:11.5px;color:var(--ink-3)">网关 / 现场</div>' +
-    '<div class="mono" style="font-size:20px;font-weight:700">' + esc(app.gw ? app.gw.name : (app.sid || '—')) + '</div></div>' +
+    '<div class="mono" style="font-size:20px;font-weight:700">' + esc(app.gw ? app.gw.name : (app.sid || '—')) + '</div>' +
+    (gwReady() ? '<div style="font-size:11px;color:var(--ink-3);margin-top:2px">链路：' + esc(gwLinkLabel()) + '</div>' : '') +
+    '</div>' +
     '<div style="display:flex;gap:22px;flex-wrap:wrap">' +
-    '<div><div style="font-size:11px;color:var(--ink-3)">固件 / IP</div><div class="mono" style="font-size:14px;font-weight:600">' +
-    esc((app.gw && app.gw.fw ? 'v' + app.gw.fw : '—') + (app.gw && app.gw.ip ? ' · ' + app.gw.ip : '')) + '</div></div>' +
+    '<div><div style="font-size:11px;color:var(--ink-3)">' + (gwReady() && gwLink() === 'ble' ? '链路 / 代理' : '固件 / IP') + '</div><div class="mono" style="font-size:14px;font-weight:600">' +
+    esc(gwReady() && gwLink() === 'ble'
+      ? 'BLE 代理'
+      : ((app.gw && app.gw.fw ? 'v' + app.gw.fw : '—') + (app.gw && app.gw.ip ? ' · ' + app.gw.ip : ''))) + '</div></div>' +
     '<div><div style="font-size:11px;color:var(--ink-3)">485 串口</div><div class="mono" style="font-size:14px;font-weight:600">' +
     esc(app.gw && app.gw.uart ? (app.gw.uart.baud + ' · ' + app.gw.uart.dataBits + app.gw.uart.parity + app.gw.uart.stopBits) : '—') + '</div></div>' +
     '<div><div style="font-size:11px;color:var(--ink-3)">权限</div><div class="mono" style="font-size:14px;font-weight:600">' +
@@ -778,8 +843,11 @@ function buildToolsView() {
       '<div class="mono" style="font-size:11px;color:var(--accent);text-align:left">' + esc(c.stat) + '</div>' +
       '</button>').join('') +
     '</div>' +
-    (app.mirror ? buildMirrorCard() : '') +
-    (!gwReady() ? '<div class="stage-note">当前为现场手机托管：完整工作台（Modscan 轮询 / raw.tx / 扫描进度）需要现场改用 <b>ESP32 模块托管</b>。' +
+    (app.mirror && !gwReady() ? buildMirrorCard() : '') +
+    (gwReady() && gwLink() === 'ble'
+      ? '<div class="stage-note">当前由现场小程序把网关命令代理到蓝牙模块（<b>BLE 小程序代理</b>）：扫描 / Modscan / 串口 / RTU / 模块参数与 ESP32 WiFi 直连完全同一套工作台。</div>'
+      : '') +
+    (!gwReady() ? '<div class="stage-note">当前为现场手机托管：完整工作台（Modscan 轮询 / raw.tx / 扫描进度）需要现场保持蓝牙连接（<b>BLE 小程序代理</b>），或让模块改用 <b>ESP32 模块托管</b>。' +
       '镜像操作仍可在上方「现场镜像页」卡片里完成。</div>' : '');
 }
 
@@ -812,7 +880,7 @@ function mirrorRow(w) {
 
 function buildMirrorView() {
   return '<div class="stage-note">现场当前页已镜像到桌面端。该模式只提供现场页面的操作入口；' +
-    '需要原始报文、轮询与客户端组帧，请让现场开启 <b>ESP32 模块托管</b>。</div>' + buildMirrorCard();
+    '需要原始报文、轮询与客户端组帧，让现场保持蓝牙连接（<b>BLE 小程序代理</b>）或开启 <b>ESP32 模块托管</b>。</div>' + buildMirrorCard();
 }
 
 /* ---------------- Modscan ---------------- */
@@ -868,7 +936,7 @@ function buildModscanView() {
     '<div class="w-card-ft"><span>写入前自动暂停轮询，FC06 写完并读回校验通过后自动恢复扫描。</span>' +
     '<span>' + (ms.at ? '最后刷新 ' + esc(ms.at) : '尚未读取') + '</span></div></div>' +
     '</div>' +
-    (gwReady() ? '' : '<div class="stage-note">Modscan 需要模块托管直连（raw.tx）；手机托管请用现场镜像页。</div>');
+    (gwReady() ? '' : '<div class="stage-note">Modscan 需要网关链路（raw.tx）：<b>BLE 小程序代理</b>或 <b>ESP32 直连</b>；纯镜像模式请用现场镜像页。</div>');
 }
 
 function modscanRowsHTML() {
@@ -923,7 +991,7 @@ function formatValue(v, fmt) {
 
 async function modscanReadOnce() {
   const ms = app.modscan;
-  if (!gwReady()) { setNotice('Modscan 需要 ESP32 模块托管'); return; }
+  if (!gwReady()) { setNotice('Modscan 需要网关链路（BLE 小程序代理 / ESP32 直连）'); return; }
   if (!app.joined || ms.busy) return;
   const meta = AREA_META[ms.area];
   const addrChk = parseAddrChecked(ms.start, meta.fc);
@@ -1070,7 +1138,7 @@ function buildSerialView() {
     '<span class="w-card-sub">TX 赭红 / RX 墨绿 · 与模块板载 WS2812B 灯语一致</span></div>' +
     '<span class="mono" style="font-size:12px;color:var(--ink-2)">TX ' + app.serial.txCount + ' 帧 / RX ' + app.serial.rxCount + ' 帧</span></div>' +
     '<div id="serMonitor" class="w-card-bd" style="display:flex;flex-direction:column;gap:6px">' + serialMonitorHTML() + '</div></div>' +
-    (gwReady() ? '' : '<div class="stage-note">串口直发走 serial.send（模块托管）；手机托管请用现场镜像页的串口控件。</div>');
+    (gwReady() ? '' : '<div class="stage-note">串口直发走 serial.send：<b>BLE 小程序代理</b>或 <b>ESP32 直连</b>；纯镜像模式请用现场镜像页的串口控件。</div>');
 }
 
 function serialMonitorHTML() {
@@ -1241,7 +1309,7 @@ function buildRtuView() {
     '<div class="w-card-bd tight"><table class="data-tbl"><thead><tr>' +
     '<th>参数名称</th><th>寄存器 · 功能码</th><th>模板默认值</th><th>设备当前现值</th><th>准备写入的目标值</th><th>即将下发 HEX（含 CRC）</th><th>单条执行</th>' +
     '</tr></thead><tbody id="rtuBody">' + rows + '</tbody></table></div>' +
-    '<div class="w-card-ft"><span>' + esc(prof.note) + '</span><span>' + (gwReady() ? '模块托管 · 客户端组帧' : '需模块托管') + '</span></div></div>' +
+    '<div class="w-card-ft"><span>' + esc(prof.note) + '</span><span>' + (gwReady() ? (gwLinkShort() + ' · 客户端组帧') : '需网关链路') + '</span></div></div>' +
 
     (v ? '<div class="w-card mark-ok"><div class="w-card-hd"><div class="w-card-title">最近一次写入校验 · ' + (v.readback === v.value ? '读回一致' : '读回不一致') + '</div>' +
       '<span class="tag ' + (v.readback === v.value ? 'ok' : 'warn') + '">FC06 写入 + FC03 读回</span></div>' +
@@ -1267,7 +1335,7 @@ function updateRtuFrames() {
 
 async function rtuReadAll() {
   const r = app.rtu;
-  if (!gwReady()) { setNotice('读取 RTU 现值需要模块托管'); return; }
+  if (!gwReady()) { setNotice('读取 RTU 现值需要网关链路（BLE 小程序代理 / ESP32 直连）'); return; }
   if (r.reading) return;
   r.reading = true;
   setBusy(1);
@@ -1363,11 +1431,14 @@ function buildModuleView() {
     '<div><div style="font-size:11.5px;color:var(--ink-3)">模块当前生效串口参数（改完模块后，下游 485 表计必须设为同参数）</div>' +
     '<div class="mono" style="font-size:24px;font-weight:700;margin-top:2px">' + esc(cur) + '</div></div>' +
     '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
-    '<div><div style="font-size:11px;color:var(--ink-3)">固件 / IP</div><div class="mono" style="font-size:14px;font-weight:600">' +
-    esc((app.gw && app.gw.fw ? 'v' + app.gw.fw : '—') + (app.gw && app.gw.ip ? ' · ' + app.gw.ip : '')) + '</div></div>' +
+    '<div><div style="font-size:11px;color:var(--ink-3)">' + (gwReady() && gwLink() === 'ble' ? '链路 / 代理' : '固件 / IP') + '</div><div class="mono" style="font-size:14px;font-weight:600">' +
+    esc(gwReady() && gwLink() === 'ble'
+      ? 'BLE 代理'
+      : ((app.gw && app.gw.fw ? 'v' + app.gw.fw : '—') + (app.gw && app.gw.ip ? ' · ' + app.gw.ip : ''))) + '</div></div>' +
     '<div><div style="font-size:11px;color:var(--ink-3)">现场链路</div><div style="font-size:13px">' +
     '<span class="tag ' + (app.peerOnline ? 'ok' : 'warn') + '">' + (app.peerOnline ? '在线' : '离线') + '</span> ' +
-    '<span class="tag ' + (gwReady() ? 'ok' : 'info') + '">' + (gwReady() ? '模块托管' : '手机托管') + '</span></div></div>' +
+    '<span class="tag ' + (gwReady() && !(app.gw && app.gw.bleDown) ? 'ok' : 'info') + '">' +
+    (gwReady() ? (app.gw.bleDown ? '蓝牙断开' : gwLinkShort()) : '手机托管') + '</span></div></div>' +
     '</div></div></div>' +
 
     '<div class="w-card ' + (dirty ? 'mark-warn' : '') + '"><div class="w-card-hd">' +
@@ -1400,7 +1471,7 @@ function buildModuleView() {
     '<button class="btn ' + (dirty ? 'danger' : 'primary') + '" style="flex:1" data-act="mod-commit">▲ 写入串口参数 · ' + esc(preview) + '</button>' +
     '</div></div>' +
     '<div class="w-card-ft"><span>提示：改完模块 485 侧参数后，下游表计必须改成同一组，否则总线无法应答。</span></div></div>' +
-    (gwReady() ? '' : '<div class="stage-note">模块参数写入需要模块托管（uart.set）；手机托管下只能看镜像。</div>');
+    (gwReady() ? '' : '<div class="stage-note">模块参数写入需要网关链路（uart.set）：BLE 小程序代理或 ESP32 直连；纯镜像模式只能看现场操作。</div>');
 }
 
 function renderModuleLive() {
@@ -1410,7 +1481,7 @@ function renderModuleLive() {
 
 async function moduleRead() {
   if (!app.joined) { setNotice('先接入会话'); return; }
-  if (!gwReady()) { setNotice('读取模块参数需要 ESP32 模块托管'); return; }
+  if (!gwReady()) { setNotice('读取模块参数需要网关链路（BLE 小程序代理 / ESP32 直连）'); return; }
   app.module.reading = true;
   setBusy(1);
   try {
@@ -1440,7 +1511,7 @@ async function moduleRead() {
 }
 
 function moduleCommit() {
-  if (!gwReady()) { setNotice('写入模块参数需要模块托管'); return; }
+  if (!gwReady()) { setNotice('写入模块参数需要网关链路（BLE 小程序代理 / ESP32 直连）'); return; }
   const e = app.module.edit;
   if (!confirm('应用模块 485 参数：' + e.baud + ' · ' + e.dataBits + e.parity + e.stopBits +
     '\n\n参数写入 ESP32 NVS 并立即生效，下游表计必须同参数，确认？')) return;
@@ -1488,7 +1559,7 @@ function buildScanView() {
     '<div id="scBar" style="height:100%;width:' + pct + '%;background:var(--rx);transition:width .3s"></div></div>' +
     '<div id="scanGrid" class="scan-grid">' + scanHitsHTML() + '</div>' +
     '</div></div>' +
-    (gwReady() ? '' : '<div class="stage-note">扫描进度来自现场固件扫描状态机（模块托管）。</div>');
+    (gwReady() ? '' : '<div class="stage-note">扫描进度来自现场模块扫描状态机（BLE 小程序代理 / ESP32 直连）。</div>');
 }
 
 function scanHitsHTML() {
@@ -1520,7 +1591,7 @@ function renderScanLive() {
 }
 
 async function scanToggle() {
-  if (!gwReady()) { setNotice('从站扫描需要模块托管（scan.start）'); return; }
+  if (!gwReady()) { setNotice('从站扫描需要网关链路（scan.start）：BLE 小程序代理 / ESP32 直连'); return; }
   const s = app.scan;
   if (s.running) {
     try {
@@ -1535,14 +1606,21 @@ async function scanToggle() {
   s.end = clamp(num(s.end, 247), s.start, 247);
   s.reg = clamp(num(s.reg, 0), 0, 65535);
   s.timeout = clamp(num(s.timeout, 80), 20, 1000);
+  // 先清本地进度再下发：BLE 代理的 START/HIT 可能在 ack 之前就到，
+  // 若等 await 之后才清，会把刚收到的 HIT 列表抹掉。
+  s.running = true; s.done = false; s.list = []; s.cur = s.start;
+  renderStage();
   try {
     await send('scan.start', { start: s.start, end: s.end, reg: s.reg, timeout: s.timeout }, {
       noRetry: true, timeout: 8000, pendingText: '扫描指令已下发…', doneText: '扫描已启动'
     });
-    s.running = true; s.done = false; s.list = []; s.cur = s.start;
     pushOp('info', '启动从站扫描', '范围 ' + s.start + '~' + s.end + ' · 探测寄存器 ' + s.reg);
     renderStage();
-  } catch (e) { setNotice('启动扫描失败：' + (e.message || '')); }
+  } catch (e) {
+    s.running = false;
+    renderStage();
+    setNotice('启动扫描失败：' + (e.message || ''));
+  }
 }
 
 /* ==================================================================
@@ -1700,16 +1778,16 @@ function bind() {
   $('btnEndSession').addEventListener('click', onEndSession);
   $('btnResync').addEventListener('click', () => {
     if (!app.joined) { setNotice('先接入会话'); return; }
-    send('sync.request', {}, { okTitle: '已重新同步', timeout: 8000 }).catch(() => {});
+    send('sync.request', {}, { okTitle: '已重新同步', timeout: 8000 }).then(onSyncData).catch(() => {});
   });
   $('btnFieldBack').addEventListener('click', () => {
     if (!app.joined) return;
-    if (gwReady()) { setNotice('模块托管没有"现场页面"可返回', true); return; }
+    if (gwReady()) { setNotice(gwLinkShort() + ' 没有"现场页面"可返回', true); return; }
     send('nav.back', {}, { okTitle: '现场已返回' }).catch(() => {});
   });
   $('btnNotifyFieldPage').addEventListener('click', () => {
     if (!app.joined) { setNotice('先接入会话'); return; }
-    if (gwReady()) { setNotice('模块托管下页面只存在于桌面端', true); return; }
+    if (gwReady()) { setNotice(gwLinkShort() + ' 下页面只存在于桌面端', true); return; }
     send('nav.open', { page: TAB_PAGE[app.activeTab] }, { okTitle: '已通知现场切到「' + TAB_LABEL[app.activeTab] + '」' }).catch(() => {});
   });
   $('btnPingField').addEventListener('click', () => {
@@ -1886,7 +1964,7 @@ function onStageClick(e) {
       break;
 
     case 'mirror-sync':
-      send('sync.request', {}, { okTitle: '已重新同步' }).catch(() => {});
+      send('sync.request', {}, { okTitle: '已重新同步' }).then(onSyncData).catch(() => {});
       break;
     case 'mirror-tap':
       mirrorTap(el.dataset.id);
@@ -1963,7 +2041,7 @@ function boot() {
   app.activeTab = 'tools';
   renderAll();
 
-  pushOp('info', '桌面工作台就绪', '输入现场 7 位会话码接入 · 模块托管 / 手机托管都支持');
+  pushOp('info', '桌面工作台就绪', '输入现场 7 位会话码接入 · ESP32 直连 / BLE 小程序代理 / 手机镜像都支持');
 }
 
 boot();

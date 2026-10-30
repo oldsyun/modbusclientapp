@@ -1,7 +1,15 @@
 # Modbus 远程调试台（desktop-client）
 
 小程序「远程协助」的**桌面远程端**复刻：输入现场给出的 7 位会话码，在 Windows / macOS / Linux
-桌面上看到现场镜像页、实时 485 报文流，并能远程下发命令（读寄存器、改参数、串口直发）。
+桌面上看到实时 485 报文流，并能远程下发命令（读寄存器、改参数、串口直发）。
+
+现场链路有三种，**桌面端工作台是同一条**：
+
+| 现场形态 | 谁在执行 485 | 桌面端 UI | 说明 |
+| --- | --- | --- | --- |
+| ESP32 WiFi 直连（Headless Gateway） | 模块自己连 broker | 网关工作台 | 现场手机可离场 |
+| **BLE 小程序代理（V2.2）** | 现场手机把网关命令转成 BLE 帧 | **同一套网关工作台** | 手机只需蓝牙连着模块 |
+| 手机纯镜像（旧模式） | 现场页面执行 `ui.action` | 镜像页 | 蓝牙没连/未开代理时的兜底 |
 
 协议与小程序现场端的 `utils/assist/*`（proto / session / host）逐字节对齐。本仓库只含桌面端；
 现场端协议真源在配套仓库中。
@@ -23,7 +31,9 @@
 └──────────────────┘
 ```
 
-## ★ v1.4 网关模式（ESP32 Headless Gateway）
+## ★ 网关模式：ESP32 直连 + BLE 小程序代理（两者同一套 UI）
+
+### A. ESP32 Headless Gateway（v1.4）
 
 新版固件（`BLE485paco.ino` v1.4）可以让 **ESP32 自己直连 broker**：现场手机在小程序里配好 WiFi、
 点「获取协作码」之后就可以离场，模块用一个 7 位 sid 自己撑着 30/60/120 分钟的会话。
@@ -47,6 +57,29 @@
 
 协议细节见配套仓库的 `BLE485paco-开发总结与接口文档.md` §12.4 与 `ESP32-WiFi配网与直连远程协助-设计需求.md`。
 
+### B. BLE 小程序代理（V2.2）
+
+现场没有可用 WiFi、或就想让手机当桥时：小程序用蓝牙连模块，再由手机连 MQTT。
+`miniprogram/utils/assist/ble-gateway.js` 把桌面端的网关命令翻译成 BLE 帧：
+
+| 桌面端命令 | 手机侧动作 | 模块回包 |
+| --- | --- | --- |
+| `raw.tx {hex,timeoutMs}` | 原样写 BLE 特征 | 收齐一帧 CRC 正确的 RTU 应答 → `{rx,rxLen,elapsed}` |
+| `serial.send {hex,wait}` | 原样写 BLE | `{tx,rx,rxLen}` / `{tx,sent,bridge:true}` |
+| `scan.start/stop` | 80 字节 `R-Scan485` / `R-ScanStop` | 固件 `SCAN485:*` 行 → `state {scan:"HIT"…}` |
+| `uart.set` | 80 字节 `W-485Setting` | 模块回读 → `{baud,dataBits,stopBits,parity}` |
+
+现场端在 `status` 里带 `gw:1, ble:1, link:"ble"`、在 `state` 里回
+`{role:"gateway", link:"ble", uart, perm, host:1}`。桌面端**不需要任何业务分支**：
+识别到网关后刷新到同一套「工具 / 扫描 / Modscan / 串口 / RTU / 模块」，
+顶栏只多一个「蓝牙代理」来源标记；蓝牙一断，顶栏变「BLE 代理暂停」，命令回 `409`。
+
+> 现场先在「远程请求接入」弹窗点「允许」；未允许前 `status` 不带 `gw`，
+> `sync` 回 `{awaitAllow:true}`（顶栏显示「等待现场在小程序里点允许」），实际读写命令回 `403`。
+>
+> 桌面端接管时，现场小程序会自动退回首页：工具页会抢 `BleTransport.onMessage`，
+> 不让路就会和桌面端的 raw.tx 回包串台。
+
 ## 界面对齐：appui v3.2 桌面工作台
 
 UI 按设计原型 `docs/appui-preview-v3.2.html` 落地（原文件 `modbus_appui_preview_v3_2.html`），与小程序同源，但按桌面习惯重新排布。
@@ -67,13 +100,13 @@ UI 按设计原型 `docs/appui-preview-v3.2.html` 落地（原文件 `modbus_app
 
 | 视图 | 桌面端行为 | 依赖 |
 | --- | --- | --- |
-| 工具总览 | 链路卡（网关 / 固件 / IP / 485 参数 / 权限 / 报文量）+ 6 张入口卡；手机托管时附现场镜像页 | 任意模式 |
-| 扫描 | 1~247 逐站探测进度、在线从站卡片，点卡片跳 RTU / Modscan | 模块托管 `scan.start/stop` |
-| Modscan | 四区切换（01/02/03/04）、站号 / 起始地址（支持 PLC 记号与 `0x`）/ 数量 / 间隔 / 格式；实时寄存器表、变值高亮、写值弹窗 | 模块托管 `raw.tx` |
-| 串口 | HEX/ASCII、自动 CRC16（低字节在前）、+CR/+LF、循环发送、收发监控台 | 模块托管 `serial.send` |
-| RTU | 内置 3 套寄存器模板；逐条 FC03 读现值，逐条 FC06/16 写并读回校验，写完自动切目标站号 | 模块托管 `raw.tx` |
-| 模块 | 固件 / IP / 485 参数读回；`uart.set` 写 NVS 并立即生效。**不提供广播名修改 UI**（远程改不了，现场蓝牙直连才能改） | 模块托管 `uart.set` |
-| 现场镜像 | 手机托管（非模块直连）时按 pageSchema 渲染镜像控件，点一下由现场执行（高危现场弹确认） | 手机托管 `ui.action` |
+| 工具总览 | 链路卡（网关 / 固件 / IP / 485 参数 / 权限 / 报文量）+ 6 张入口卡；纯镜像时附现场镜像页 | 任意模式 |
+| 扫描 | 1~247 逐站探测进度、在线从站卡片，点卡片跳 RTU / Modscan | 网关链路 `scan.start/stop` |
+| Modscan | 四区切换（01/02/03/04）、站号 / 起始地址（支持 PLC 记号与 `0x`）/ 数量 / 间隔 / 格式；实时寄存器表、变值高亮、写值弹窗 | 网关链路 `raw.tx` |
+| 串口 | HEX/ASCII、自动 CRC16（低字节在前）、+CR/+LF、循环发送、收发监控台 | 网关链路 `serial.send` |
+| RTU | 内置 3 套寄存器模板；逐条 FC03 读现值，逐条 FC06/16 写并读回校验，写完自动切目标站号 | 网关链路 `raw.tx` |
+| 模块 | 固件 / IP / 485 参数读回；`uart.set` 写 NVS 并立即生效。**不提供广播名修改 UI**（远程改不了，现场蓝牙直连才能改） | 网关链路 `uart.set` |
+| 现场镜像 | 蓝牙没连模块 / 未开网关代理时的旧模式：按 pageSchema 渲染镜像控件，点一下由现场执行（高危现场弹确认） | 纯镜像 `ui.action` |
 
 > 写操作（FC06/FC16、`uart.set`、`serial.send`）一律不自动重发；写寄存器默认 FC03 读回比对，差异写进右栏与状态栏。
 >
@@ -102,6 +135,7 @@ desktop-client/
 │   ├── unit.test.js      # 协议层单测（node --test，离线）
 │   ├── modbus.test.js    # CRC16 向量 / 组帧 / 解析单测（离线）
 │   ├── e2e.gateway.mjs   # 网关模式端到端：模拟 ESP32 → 桌面远程端（离线，无需 broker）
+│   ├── e2e.bleproxy.mjs  # BLE 小程序代理端到端：真实 Host+代理 ↔ 真实桌面 Session（离线）
 │   └── smoke.broker.mjs  # broker 连通性冒烟（需网络 + 环境变量）
 └── vite.config.js
 ```
@@ -114,6 +148,7 @@ npm test                    # 协议层单测 + 网关端到端（离线）
 node tests/smoke.broker.mjs # 真实 broker 冒烟（wss 握手/账号/订阅/发布）
 node tests/e2e.session.mjs  # 端到端：Node 模拟现场端 + 桌面端 remote 对通（9 项，需网络）
 node tests/e2e.gateway.mjs  # 网关模式：模拟 ESP32 直连 broker 的行为（离线）
+node tests/e2e.bleproxy.mjs # BLE 小程序代理：手机 Host/BLE 代理 ↔ 桌面端全链路（离线；单仓 CI 自动跳过）
 
 npm run tauri dev           # 桌面壳 + 前端热更（调试）
 npm run dev                 # 纯浏览器打开 http://localhost:5173（无 Tauri 也能跑）
@@ -234,6 +269,7 @@ workflow 在 `build` job 里把它们映射成 `VITE_MQTT_*`，`npx tauri build`
 | 命令超时 | 1.5s 补发一次；写类不补发；202 后 60s | `CMD_TIMEOUT_MS / CONFIRM_TIMEOUT_MS` |
 | clientId | `assist_remote_{sid}_{ts}` | `session.js connect()` |
 | 准入字段 | status/cmd 带 `cid`（clientId）+ `kind:"desktop"` | `session.js publishStatus/_nextEnvelope` |
+| 网关来源 | status `{gw:1,ble:1,link:"ble"}` / state `{role:"gateway",link:"ble"}` | `host.js _gatewayStatus/_gatewayDetail` |
 | 会话码 | 7 位 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` | `SID_LEN / SID_CHARS` |
 | broker | `wss://<host>/mqtt`（默认口不拼端口，地址由 `VITE_MQTT_*` 注入） | `MQTT_SERVER / buildWsUrl()` |
 
@@ -241,10 +277,13 @@ workflow 在 `build` job 里把它们映射成 `VITE_MQTT_*`，`npx tauri build`
 
 - 桌面端仍是 remote 角色：所有 485 字节由现场模块 / 手机发出（协议核心约束，无直连硬件路径）；
   模块托管时桌面端负责**客户端组帧**（`raw.tx`），固件只做长度/CRC/FC 门禁与透传。
-- 手机托管（非网关）时只能用镜像页：`ui.action` 派发到现场页面，桌面端的 Modscan 轮询 / 扫描进度不可用。
+- 现场手机蓝牙连着模块时走 BLE 小程序代理，桌面端拿到完整网关工作台；只有蓝牙没连 /
+  现场主动关掉代理时才退回镜像页（`ui.action`），此时 Modscan 轮询 / 扫描进度不可用。
 - 写命令被现场确认弹窗拦下时显示"等待现场确认"（202），最长 60s。
 - 与小程序远程端互斥：同一 sid 同时只允许一个 remote（第二个 join 会被现场 409 拒绝）；
   网关托管期间桌面端带 `kind:"desktop"` 优先准入。
-- 模块托管下不能远程改 BLE 广播名（网关没有对应命令，现场界面也不显示改名控件），必须现场蓝牙直连改。
+- 网关模式（ESP32 直连或 BLE 代理）都不能远程改 BLE 广播名：没有对应命令，必须现场蓝牙直连改。
 - FC03 单次读受固件 ack 尺寸限制（≤32 个寄存器）；桌面端上限取 120 并以固件返回为准。
+- BLE 代理的固件 / IP 为空（`R-WORK` 不含版本/IP），模块页显示“—”；485 参数与模块名走
+  `R-485Setting` / `R-PartNumber`，与 ESP32 直连同源。
 - broker 地址 / 账号由构建期环境变量注入（发行包已内置）；换服务器可用界面「设置」覆盖，或在 CI 里改 Secrets 重新构建。
