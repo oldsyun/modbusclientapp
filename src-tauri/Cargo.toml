@@ -1,0 +1,20 @@
+[package]
+name = "modbus-remote-desktop"
+version = "2.0.0"
+description = "ESP32 485 远程协助桌面客户端（小程序远程端复刻）"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+# 体积优化：开 opt-level=s + strip，release 包显著变小
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

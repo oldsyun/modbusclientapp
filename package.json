@@ -1,0 +1,18 @@
+{
+  "name": "modbus-remote-desktop",
+  "productName": "Modbus 远程调试台",
+  "version": "2.0.0",
+  "description": "ESP32 485 远程协助桌面客户端（MQTT 远程调试台，小程序远程端复刻）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "node --test tests/*.test.js && node tests/e2e.gateway.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "vite": "^8.3.5"
+  }
+}

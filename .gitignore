@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.npm-cache/
+.cargo-home/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.env
+.env.*
+!.env.example

@@ -1,0 +1,2672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Modbus 远程调试台 · 桌面端专业改版预览与交互原型 (appui-preview v3.2.3)</title>
+<style>
+/* =====================================================================
+   SYCC · Modbus 远程调试台 (Desktop App UI 改版规范 v3.2)
+   与小程序 ui-preview.html 保持语义同源：
+   - 结构色：深蓝灰 (--brand)
+   - 灯语数据色：发数据 TX 赭红 / 收数据 RX 墨绿（与板载 WS2812B 指示灯一致）
+   - 桌面端优化：支持「深色工业仪表台 (Dark Pro)」与「浅色小程序同源 (Light Sync)」双主题切换
+   - 告别手机竖排单列大框堆叠，采用「顶部链路带 + 主工作区双栏网格 + 右侧报文/操作分屏坞 + 底部非遮挡状态栏」
+   ===================================================================== */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+:root, body[data-theme="dark"] {
+  --page-bg: #0d1117;
+  --page-ink: #e6edf3;
+  --page-sub: #8b949e;
+  --spec-card: #151b23;
+  --spec-line: #262f3d;
+
+  /* 桌面窗口内部 Token (Dark Pro) */
+  --win-bg: #11161d;
+  --win-panel: #171d26;
+  --win-card: #1c232e;
+  --win-card-hover: #212936;
+  --win-ipt: #121720;
+  --win-line: #2a3444;
+  --win-line-soft: #212936;
+  --ink: #ecf2f8;
+  --ink-2: #9fb0c4;
+  --ink-3: #68778a;
+
+  --brand: #3b597d;
+  --brand-bright: #4e80bc;
+  --brand-soft: rgba(78, 128, 188, 0.16);
+  --accent: #4aa3ba;
+
+  /* 固件 WS2812B 灯语同源数据色 */
+  --tx: #e0705e;
+  --tx-bg: rgba(196, 85, 68, 0.14);
+  --tx-line: rgba(224, 112, 94, 0.35);
+  --rx: #56b881;
+  --rx-bg: rgba(61, 145, 98, 0.14);
+  --rx-line: rgba(86, 184, 129, 0.35);
+  --warn: #e0a546;
+  --warn-bg: rgba(224, 165, 70, 0.13);
+  --warn-line: rgba(224, 165, 70, 0.36);
+  --danger: #e05d4d;
+  --danger-bg: rgba(209, 77, 62, 0.13);
+  --danger-line: rgba(224, 93, 77, 0.36);
+  --info-bg: rgba(74, 163, 186, 0.12);
+  --info-line: rgba(74, 163, 186, 0.32);
+
+  /* 顶部链路带：浅色主题整套切浅色，避免"一条深色横杠" */
+  --hdr-bg: #233144;
+  --hdr-line: rgba(255, 255, 255, 0.08);
+  --hdr-ink: #ffffff;
+  --hdr-sub: rgba(255, 255, 255, 0.55);
+  --hdr-session-bg: rgba(12, 18, 26, 0.42);
+  --hdr-session-line: rgba(255, 255, 255, 0.16);
+  --hdr-pill-bg: rgba(255, 255, 255, 0.07);
+  --hdr-pill-line: rgba(255, 255, 255, 0.13);
+  --hdr-pill-ink: rgba(255, 255, 255, 0.85);
+  --hdr-pill-dot: #8fc7a9;
+  --hdr-btn-bg: rgba(255, 255, 255, 0.08);
+  --hdr-btn-line: rgba(255, 255, 255, 0.18);
+  --hdr-btn-ink: rgba(255, 255, 255, 0.9);
+  --hdr-ok-bg: rgba(61, 113, 84, 0.32);
+  --hdr-ok-line: rgba(143, 199, 169, 0.42);
+  --hdr-ok-ink: #c7ebd7;
+  --hdr-ok-dot: #7ce0a7;
+  --hdr-warn-bg: rgba(154, 103, 31, 0.35);
+  --hdr-warn-line: rgba(224, 180, 106, 0.45);
+  --hdr-warn-ink: #fae0b4;
+  --hdr-warn-dot: #f2b959;
+  --hdr-err-bg: rgba(163, 64, 47, 0.35);
+  --hdr-err-line: rgba(221, 148, 133, 0.45);
+  --hdr-err-ink: #fad2ca;
+  --hdr-err-dot: #f08270;
+
+  --shadow-win: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --shadow-card: 0 2px 6px rgba(0, 0, 0, 0.22);
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, "Courier New", monospace;
+  --sans: -apple-system, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+}
+
+body[data-theme="light"] {
+  --page-bg: #e3e8ee;
+  --page-ink: #1e2a3a;
+  --page-sub: #5b6b7f;
+  --spec-card: #ffffff;
+  --spec-line: #d6dfe9;
+
+  /* 桌面窗口内部 Token (Light Sync - 与小程序 app.wxss 完全同色) */
+  --win-bg: #eef1f5;
+  --win-panel: #f6f8fb;
+  --win-card: #ffffff;
+  --win-card-hover: #f9fbfd;
+  --win-ipt: #fbfcfe;
+  --win-line: #dce4ee;
+  --win-line-soft: #eef2f7;
+  --ink: #1e2a3a;
+  --ink-2: #4b5b6f;
+  --ink-3: #8794a6;
+
+  --brand: #2f4159;
+  --brand-bright: #2f4159;
+  --brand-soft: #e9eef5;
+  --accent: #2e6b7d;
+
+  --tx: #a34a3a;
+  --tx-bg: #f9efec;
+  --tx-line: #ecd2cc;
+  --rx: #3d7154;
+  --rx-bg: #eef4ef;
+  --rx-line: #cfe2d5;
+  --warn: #9a671f;
+  --warn-bg: #faf3e6;
+  --warn-line: #ead9b6;
+  --danger: #a3402f;
+  --danger-bg: #fbf1ef;
+  --danger-line: #ecd2cc;
+  --info-bg: #edf3f7;
+  --info-line: #d5e2ea;
+
+  /* 顶部链路带（Light Sync） */
+  --hdr-bg: #e8eef6;
+  --hdr-line: #d3dde9;
+  --hdr-ink: #1e2a3a;
+  --hdr-sub: #6b7a8d;
+  --hdr-session-bg: #ffffff;
+  --hdr-session-line: #d3dde9;
+  --hdr-pill-bg: #ffffff;
+  --hdr-pill-line: #d3dde9;
+  --hdr-pill-ink: #42536a;
+  --hdr-pill-dot: #8794a6;
+  --hdr-btn-bg: #ffffff;
+  --hdr-btn-line: #d3dde9;
+  --hdr-btn-ink: #24334a;
+  --hdr-ok-bg: #eef4ef;
+  --hdr-ok-line: #cfe2d5;
+  --hdr-ok-ink: #2f6b4d;
+  --hdr-ok-dot: #3d7154;
+  --hdr-warn-bg: #faf3e6;
+  --hdr-warn-line: #ead9b6;
+  --hdr-warn-ink: #81571c;
+  --hdr-warn-dot: #b07d2a;
+  --hdr-err-bg: #fbf1ef;
+  --hdr-err-line: #ecd2cc;
+  --hdr-err-ink: #8f3a2b;
+  --hdr-err-dot: #c05744;
+
+  --shadow-win: 0 20px 50px rgba(30, 42, 58, 0.18), 0 0 0 1px #cbd5e0;
+  --shadow-card: 0 1px 2px rgba(30, 42, 58, 0.04), 0 4px 12px rgba(30, 42, 58, 0.04);
+}
+
+body {
+  margin: 0;
+  padding: 32px 28px 80px;
+  background: var(--page-bg);
+  color: var(--page-ink);
+  font: 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  transition: background .2s ease, color .2s ease;
+}
+
+.container { max-width: 1440px; margin: 0 auto; }
+.topmark { width: 44px; height: 5px; border-radius: 3px; background: var(--brand-bright); margin-bottom: 12px; }
+h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.2px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+h1 .ver { font-size: 13px; font-weight: 500; padding: 3px 10px; border-radius: 999px; background: var(--brand-soft); color: var(--accent); font-family: var(--mono); }
+h2.board-title { font-size: 19px; margin: 38px 0 6px; letter-spacing: .2px; display: flex; align-items: center; gap: 10px; }
+.board-sub { font-size: 13px; color: var(--page-sub); margin: 0 0 16px; line-height: 1.7; }
+.sub { font-size: 14.5px; color: var(--page-sub); margin: 0 0 6px; max-width: 1220px; line-height: 1.65; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ---------- 顶部改版摘要与控制栏 ---------- */
+.top-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 14px;
+  margin: 20px 0 24px;
+}
+.diag-card {
+  background: var(--spec-card);
+  border: 1px solid var(--spec-line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.diag-card h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--page-ink);
+}
+.diag-card h3 .badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.diag-card ul { margin: 0; padding-left: 16px; color: var(--page-sub); font-size: 12.5px; line-height: 1.75; }
+.diag-card li b { color: var(--page-ink); font-weight: 600; }
+
+/* ---------- 演示控制台 (Preview Controller Bar) ---------- */
+.sim-toolbar {
+  position: sticky;
+  top: 10px;
+  z-index: 100;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: var(--spec-card);
+  border: 1px solid var(--spec-line);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(12px);
+}
+.sim-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sim-label { font-size: 12px; font-weight: 600; color: var(--page-sub); margin-right: 2px; }
+.sim-pill {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid var(--spec-line);
+  background: transparent;
+  color: var(--page-ink);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all .15s ease;
+}
+.sim-pill:hover { border-color: var(--accent); }
+.sim-pill.on { background: var(--brand); border-color: var(--brand-bright); color: #fff; font-weight: 600; }
+
+/* =====================================================================
+   桌面端应用主窗口 (Desktop App Window - 1380px Fluid Workbench)
+   ===================================================================== */
+.desktop-win {
+  width: 100%;
+  min-height: 760px;
+  background: var(--win-bg);
+  color: var(--ink);
+  border-radius: 14px;
+  box-shadow: var(--shadow-win);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--win-line);
+  position: relative;
+}
+
+/* 1. macOS 窗口标题栏 */
+.win-titlebar {
+  height: 36px;
+  background: var(--win-panel);
+  border-bottom: 1px solid var(--win-line-soft);
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  user-select: none;
+}
+.traffic-lights { display: flex; gap: 8px; margin-right: 14px; }
+.tl { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.tl.r { background: #ff5f57; }
+.tl.y { background: #febc2e; }
+.tl.g { background: #28c840; }
+.win-title { font-size: 12.5px; font-weight: 600; color: var(--ink-2); letter-spacing: .2px; }
+.win-title-sub { font-size: 11px; color: var(--ink-3); margin-left: 8px; font-family: var(--mono); }
+.win-title-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--ink-3); }
+
+/* 2. 顶部深色链路与会话状态带 (对应小程序 .mhead + 会话条) */
+.app-header {
+  background: var(--hdr-bg);
+  color: var(--hdr-ink);
+  padding: 10px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--hdr-line);
+}
+.ah-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.logo-485 {
+  background: #3d74b8;
+  color: #fff;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  letter-spacing: .5px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25);
+}
+.ah-brand { font-size: 15px; font-weight: 600; letter-spacing: .2px; color: var(--hdr-ink); }
+
+/* 会话码胶囊组 */
+.session-box {
+  display: inline-flex;
+  align-items: center;
+  background: var(--hdr-session-bg);
+  border: 1px solid var(--hdr-session-line);
+  border-radius: 8px;
+  padding: 3px 4px 3px 10px;
+  gap: 8px;
+}
+.session-lbl { font-size: 11px; color: var(--hdr-sub); }
+.session-code {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2.5px;
+  color: var(--hdr-ink);
+  background: transparent;
+  border: none;
+  width: 96px;
+  outline: none;
+  text-transform: uppercase;
+}
+.session-btn {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--danger-line);
+  background: var(--danger-bg);
+  color: var(--danger);
+  transition: all .15s;
+}
+.session-btn:hover { background: var(--danger); color: #fff; }
+
+/* 链路遥测指标带 */
+.telemetry-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.t-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  background: var(--hdr-pill-bg);
+  border: 1px solid var(--hdr-pill-line);
+  color: var(--hdr-pill-ink);
+  white-space: nowrap;
+}
+.t-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hdr-pill-dot); }
+.t-pill.ok { background: var(--hdr-ok-bg); border-color: var(--hdr-ok-line); color: var(--hdr-ok-ink); }
+.t-pill.ok .dot { background: var(--hdr-ok-dot); box-shadow: 0 0 6px var(--hdr-ok-line); }
+.t-pill.warn { background: var(--hdr-warn-bg); border-color: var(--hdr-warn-line); color: var(--hdr-warn-ink); }
+.t-pill.warn .dot { background: var(--hdr-warn-dot); }
+.t-pill.err { background: var(--hdr-err-bg); border-color: var(--hdr-err-line); color: var(--hdr-err-ink); }
+.t-pill.err .dot { background: var(--hdr-err-dot); }
+
+.ah-right { display: flex; align-items: center; gap: 8px; }
+.hdr-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--hdr-btn-ink);
+  background: var(--hdr-btn-bg);
+  border: 1px solid var(--hdr-btn-line);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all .15s;
+}
+.hdr-btn:hover { filter: brightness(1.08); }
+.hdr-btn.danger {
+  background: var(--hdr-err-bg);
+  border-color: var(--hdr-err-line);
+  color: var(--hdr-err-ink);
+}
+.hdr-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* 3. 二级工具坞导航栏 (对应小程序 .dock) */
+.sub-navbar {
+  background: var(--win-panel);
+  border-bottom: 1px solid var(--win-line);
+  padding: 0 18px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.nav-tabs { display: flex; align-items: center; gap: 4px; height: 100%; }
+.nav-tab {
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all .15s;
+}
+.nav-tab:hover { color: var(--ink); background: var(--win-card); }
+.nav-tab.on {
+  background: var(--brand-soft);
+  border-color: var(--brand-bright);
+  color: var(--ink);
+  font-weight: 600;
+}
+.nav-tab svg { width: 14px; height: 14px; opacity: .75; }
+.nav-tab.on svg { opacity: 1; stroke: var(--accent); }
+
+.sync-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.sync-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: var(--win-card);
+  border: 1px solid var(--win-line);
+  font-size: 12px;
+}
+.sync-badge b { color: var(--accent); font-weight: 600; }
+
+/* 现场离线全局可恢复告警横幅 (取代原版在操作记录里无限刷屏) */
+.offline-banner {
+  background: var(--warn-bg);
+  border-bottom: 1px solid var(--warn-line);
+  padding: 9px 18px;
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+.offline-banner.show { display: flex; }
+.ob-left { display: flex; align-items: center; gap: 9px; color: var(--ink); }
+.ob-mark {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--warn); color: #fff; font-weight: 700; font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+}
+.ob-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* 4. 主体分栏容器 (左：业务工作区 66% | 右：遥测与操作记录坞 34%) */
+.workbench-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 410px;
+  min-height: 610px;
+  overflow: hidden;
+}
+.workbench-body.dock-wide {
+  grid-template-columns: minmax(0, 1fr) 480px;
+}
+
+.main-stage {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* 卡片自带 overflow:hidden，作为 flex item 时 min-height 会退化为 0 —— 表格一长就把
+   同列的工具栏/按钮压扁。禁止收缩，让 .main-stage 自己滚动。 */
+.main-stage > * { flex: 0 0 auto; }
+/* Modscan 顶部工具栏：轮询开始后按钮在这里，粘住顶部不会被滚走 */
+.ms-toolbar { position: sticky; top: 0; z-index: 8; box-shadow: 0 6px 16px rgba(0,0,0,.16); }
+
+/* ---------- 通用卡片与表单组件 ---------- */
+.w-card {
+  background: var(--win-card);
+  border: 1px solid var(--win-line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.w-card.mark-ok { border-left: 3px solid var(--rx); }
+.w-card.mark-warn { border-left: 3px solid var(--warn); }
+.w-card.mark-danger { border-left: 3px solid var(--danger); }
+
+.w-card-hd {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--win-line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.w-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.w-card-title::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--brand-bright);
+}
+.w-card-sub { font-size: 12px; font-weight: 400; color: var(--ink-3); }
+.w-card-bd { padding: 14px; }
+.w-card-bd.tight { padding: 0; }
+.w-card-ft {
+  padding: 9px 14px;
+  background: var(--win-panel);
+  border-top: 1px solid var(--win-line-soft);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 按钮体系 */
+.btn {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 7px;
+  font: 500 13px/1 var(--sans);
+  border: 1px solid var(--win-line);
+  background: var(--win-panel);
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: all .15s ease;
+}
+.btn:hover { border-color: var(--ink-3); background: var(--win-card-hover); }
+.btn.primary {
+  background: var(--brand);
+  border-color: var(--brand-bright);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+  color: var(--danger);
+  font-weight: 600;
+}
+.btn.danger:hover { background: var(--danger); color: #fff; }
+.btn.rx-btn {
+  background: var(--rx-bg);
+  border-color: var(--rx-line);
+  color: var(--rx);
+  font-weight: 600;
+}
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; }
+.btn.lg { height: 38px; padding: 0 18px; font-size: 13.5px; }
+.btn.block { width: 100%; }
+
+/* 语义小标签 */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.tag.danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-line); }
+.tag.warn { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn-line); }
+.tag.ok { background: var(--rx-bg); color: var(--rx); border: 1px solid var(--rx-line); }
+.tag.info { background: var(--info-bg); color: var(--accent); border: 1px solid var(--info-line); }
+.tag.tx { background: var(--tx-bg); color: var(--tx); border: 1px solid var(--tx-line); }
+
+/* 表单输入与分段控件 */
+.ipt, select.ipt {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-line);
+  background: var(--win-ipt);
+  color: var(--ink);
+  font: 13px/1 var(--sans);
+  outline: none;
+  width: 100%;
+  transition: border-color .15s;
+}
+.ipt:focus { border-color: var(--accent); }
+.ipt.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.ipt.sm { height: 28px; padding: 0 8px; font-size: 12px; }
+
+.seg {
+  display: inline-flex;
+  background: var(--win-ipt);
+  border: 1px solid var(--win-line);
+  padding: 2px;
+  border-radius: 7px;
+  gap: 2px;
+}
+.seg-i {
+  padding: 5px 11px;
+  font-size: 12px;
+  color: var(--ink-2);
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  transition: all .12s;
+  white-space: nowrap;
+}
+.seg-i.on {
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 参数网格 */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+.f-item { display: flex; flex-direction: column; gap: 5px; }
+.f-label {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.f-hint { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+
+/* 数据表格 (Modscan / RTU 专用) */
+.data-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.data-tbl th {
+  text-align: left;
+  padding: 9px 12px;
+  background: var(--win-panel);
+  color: var(--ink-3);
+  font-weight: 600;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--win-line);
+  white-space: nowrap;
+}
+.data-tbl td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--win-line-soft);
+  vertical-align: middle;
+}
+.data-tbl tr:last-child td { border-bottom: none; }
+.data-tbl tbody tr:hover { background: var(--win-card-hover); }
+.val-pill {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--rx);
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+.val-pill.chg {
+  color: var(--tx);
+  background: var(--tx-bg);
+  border: 1px solid var(--tx-line);
+}
+.val-pill.wait {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* 报文预览条 */
+.frame-box {
+  padding: 8px 11px;
+  border-radius: 6px;
+  background: var(--win-ipt);
+  border: 1px dashed var(--win-line);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ---------- 5. 右栏：遥测坞 (操作记录 + 实时报文流双联面板) ---------- */
+.telemetry-dock {
+  background: var(--win-panel);
+  border-left: 1px solid var(--win-line);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.dock-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--win-line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dock-split {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dock-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.dock-pane + .dock-pane {
+  border-top: 1px solid var(--win-line);
+}
+.pane-bar {
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.12);
+  border-bottom: 1px solid var(--win-line-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.log-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 紧凑型操作记录行 (取代原版占满半屏的巨型卡片，支持 ×N 聚合) */
+.op-item {
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--win-card);
+  border: 1px solid var(--win-line-soft);
+  border-left: 3px solid var(--rx);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.op-item.info { border-left-color: var(--brand-bright); }
+.op-item.warn { border-left-color: var(--warn); background: var(--warn-bg); }
+.op-item.err { border-left-color: var(--danger); background: var(--danger-bg); }
+.op-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+}
+.op-cnt {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--win-panel);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.op-title { font-size: 12.5px; font-weight: 500; color: var(--ink); }
+.op-desc { font-size: 11px; color: var(--ink-2); line-height: 1.45; }
+
+/* 实时 TX/RX 报文流行 */
+.pkt-line {
+  padding: 6px 9px;
+  border-radius: 5px;
+  background: var(--win-card);
+  border-left: 3px solid transparent;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: background .12s;
+}
+.pkt-line:hover { background: var(--win-card-hover); }
+.pkt-line.tx { border-left-color: var(--tx); color: var(--tx); }
+.pkt-line.rx { border-left-color: var(--rx); color: var(--rx); }
+.pkt-line.err { border-left-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
+.pkt-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-bottom: 2px;
+}
+.pkt-dir { font-weight: 700; padding: 0 4px; border-radius: 3px; }
+.pkt-line.tx .pkt-dir { background: var(--tx-bg); color: var(--tx); }
+.pkt-line.rx .pkt-dir { background: var(--rx-bg); color: var(--rx); }
+
+/* ---------- 6. 底部固定状态与指令回执栏 (取代遮挡卡片的浮层 + 原始 result/busy 文本) ---------- */
+.app-statusbar {
+  height: 38px;
+  background: var(--win-panel);
+  border-top: 1px solid var(--win-line);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.sb-left, .sb-right { display: flex; align-items: center; gap: 12px; }
+.sb-cmd-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: var(--info-bg);
+  border: 1px solid var(--info-line);
+  color: var(--ink);
+  font-size: 11.5px;
+}
+.sb-cmd-banner.pending {
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+.sb-kv {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.sb-kv b { color: var(--ink-2); font-weight: 600; }
+.sb-kv b.ok { color: var(--rx); }
+.sb-kv b.err { color: var(--danger); }
+
+/* ---------- 三、平铺静态画板 (用于一目了然对比 4 张截图的改版效果) ---------- */
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(620px, 1fr));
+  gap: 22px;
+  margin-top: 16px;
+}
+.mini-win {
+  background: var(--win-bg);
+  border: 1px solid var(--win-line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  color: var(--ink);
+}
+.mini-hd {
+  background: #233144;
+  color: #fff;
+  padding: 9px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.mini-bd { padding: 14px; }
+
+/* ---------- 四、改动对照表 ---------- */
+table.diff {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--spec-card);
+  border: 1px solid var(--spec-line);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 13px;
+}
+table.diff th, table.diff td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--spec-line);
+  vertical-align: top;
+}
+table.diff th {
+  background: rgba(78, 128, 188, 0.08);
+  font-size: 12px;
+  color: var(--page-sub);
+  font-weight: 600;
+}
+table.diff tr:last-child td { border-bottom: none; }
+table.diff code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--brand-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+/* 模态写入框 (Modscan / 高危操作确认) */
+.modal-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(9, 13, 19, 0.65);
+  backdrop-filter: blur(3px);
+  z-index: 50;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.modal-mask.show { display: flex; }
+.modal-card {
+  width: 420px;
+  background: var(--win-card);
+  border: 1px solid var(--win-line);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+@media (max-width: 1080px) {
+  .workbench-body, .workbench-body.dock-wide {
+    grid-template-columns: 1fr;
+  }
+  .telemetry-dock {
+    border-left: none;
+    border-top: 1px solid var(--win-line);
+    height: 360px;
+  }
+  .board-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body data-theme="dark">
+
+<div class="container">
+  <div class="topmark"></div>
+  <h1>
+    Modbus 远程调试台 · 桌面端 UI/UX 专业改版方案
+    <span class="ver">appui-preview · v3.2.3 Desktop Workbench</span>
+  </h1>
+  <p class="sub">
+    与手机端小程序 <span class="mono">ui-preview.html (v3.2)</span> 共享同一套工业视觉与 WS2812B 固件灯语（发数据 TX 赭红 / 收数据 RX 墨绿 / 结构深蓝灰），彻底重构桌面端截图中的「手机单列大框堆叠、核心数据表缺失、高危红框视觉疲劳、操作记录刷屏占满半屏」四大痛点。
+  </p>
+
+  <p class="sub" style="margin-top:10px">
+    <b>v3.2.3 修订</b>：Modscan 只保留一个「启动连续扫描 / 停止轮询」按钮并固定在滚动区顶部；
+    去掉实时寄存器表的「点位说明」列；模块设置页不再提供广播名称修改 UI（远程改不了，现场蓝牙才能改）；
+    主工作区禁止卡片被 flex 压缩，长表格不会再挤扁工具栏/按钮；
+    浅色主题下顶部链路带一并转浅色（`--hdr-*` token），不再留一条突兀的深色横杠。
+  </p>
+
+  <!-- ============================== 一、现状问题诊断与设计规范 ============================== -->
+  <div class="top-summary">
+    <div class="diag-card">
+      <h3>1. 告别「单列大框 + 铅笔图标」<span class="badge" style="background:var(--danger-bg);color:var(--danger)">原图痛点 01</span></h3>
+      <ul>
+        <li><b>现状问题</b>：原版将波特率、数据位、校验位、停止位拆成 7 个全宽大框，改一个参数要点一次铅笔，执行按钮与参数分离。</li>
+        <li><b>专业方案</b>：采用桌面级<b>紧凑表单网格 + 分段直选控件 (Segmented Control)</b>，同组参数合成一张卡片，顶部实时预览 <span class="mono">19200 · 8E1</span> 并一键下发。</li>
+      </ul>
+    </div>
+    <div class="diag-card">
+      <h3>2. 补齐核心「寄存器表与报文台」<span class="badge" style="background:var(--warn-bg);color:var(--warn)">原图痛点 02</span></h3>
+      <ul>
+        <li><b>现状问题</b>：原版 Modscan 只有左侧 6 个参数框，看不见寄存器实时数据表；串口页报文内容只有一行铅笔输入，TX/RX 报文流被藏在右上角按钮里。</li>
+        <li><b>专业方案</b>：桌面端采用<b>「左参数控制 + 右实时数据表」</b>双栏布局，点击任意寄存器行即可弹窗改值并预览 FC06 报文。</li>
+      </ul>
+    </div>
+    <div class="diag-card">
+      <h3>3. 解除「全屏红框疲劳」与黄条遮挡<span class="badge" style="background:var(--info-bg);color:var(--accent)">原图痛点 03</span></h3>
+      <ul>
+        <li><b>现状问题</b>：原版把几乎所有字段都套上红框与「高危」字样，导致真正报错时不醒目；底部「已下发，等现场回执…」黄条直接遮住下方卡片。</li>
+        <li><b>专业方案</b>：仅在<b>写入动作按钮</b>与<b>未保存脏状态</b>上克制标注高危；下发回执移入<b>底部固定状态栏</b>，绝不遮挡表单。</li>
+      </ul>
+    </div>
+    <div class="diag-card">
+      <h3>4. 右栏「操作记录 + 报文流」分屏聚合<span class="badge" style="background:var(--rx-bg);color:var(--rx)">原图痛点 04</span></h3>
+      <ul>
+        <li><b>现状问题</b>：右侧 45% 面积被重复的「已通知现场打开工具」「现场没响应」巨型卡片刷屏，关键的原始 HEX 报文流却看不到。</li>
+        <li><b>专业方案</b>：右栏升级为<b>「实时报文流 TX/RX + 协作记录」上下分屏</b>，连续相同动作自动折叠为 <span class="mono">×3</span>，离线提示提炼为顶部可恢复横幅。</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============================== 二、可交互桌面端实机预览 ============================== -->
+  <h2 class="board-title">一、桌面端全功能交互工作台（点击下方 Tab 或控件可直接体验）</h2>
+  <p class="board-sub">
+    已完整实现您 4 张截图对应的 <b>Modscan、串口、RTU、模块</b> 以及 <b>工具总览、从站扫描、会话接入</b> 共 7 个视图；上方控制台可一键切换「深色工业台 / 浅色小程序同源主题」与「现场在线 / 现场离线告警态」。
+  </p>
+
+  <!-- 预览仿真控制条 -->
+  <div class="sim-toolbar">
+    <div class="sim-group">
+      <span class="sim-label">快速切页：</span>
+      <button class="sim-pill" data-goto="module">① 模块设置 (对应图1)</button>
+      <button class="sim-pill" data-goto="rtu">② RTU 参数 (对应图2)</button>
+      <button class="sim-pill" data-goto="serial">③ 串口调试 (对应图3)</button>
+      <button class="sim-pill on" data-goto="modscan">④ Modscan (对应图4)</button>
+      <button class="sim-pill" data-goto="scan">⑤ 从站扫描</button>
+      <button class="sim-pill" data-goto="tools">⑥ 工具总览</button>
+    </div>
+    <div class="sim-group">
+      <span class="sim-label">状态/主题仿真：</span>
+      <button class="sim-pill" id="btnToggleOffline">现场状态：在线</button>
+      <button class="sim-pill" id="btnToggleTheme">主题：深色工业台 (Dark)</button>
+      <button class="sim-pill" id="btnSimRx">模拟收到一帧 RX</button>
+    </div>
+  </div>
+
+  <!-- ==================== 桌面 App 窗口主体 ==================== -->
+  <div class="desktop-win" id="desktopApp">
+    <!-- 1. 窗口标题栏 -->
+    <div class="win-titlebar">
+      <div class="traffic-lights">
+        <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
+      </div>
+      <span class="win-title">Modbus 远程调试台</span>
+      <span class="win-title-sub">SYCC Remote Workbench v3.2.3 · BLE-RS485 Bridge</span>
+      <div class="win-title-right">
+        <span>MQTT Secure Broker: wss://iot.sycc-modbus.cn</span>
+      </div>
+    </div>
+
+    <!-- 2. 顶部深色状态带 (融合小程序 .mhead 与远程会话控制) -->
+    <div class="app-header">
+      <div class="ah-left">
+        <span class="logo-485">485</span>
+        <span class="ah-brand">Modbus 远程调试台</span>
+        <div class="session-box">
+          <span class="session-lbl">会话码</span>
+          <input class="session-code" id="sessionCodeInput" value="URFBBR3" maxlength="7" title="输入7位现场远程码">
+          <button class="session-btn" id="btnSessionToggle">断开</button>
+        </div>
+
+        <div class="telemetry-strip">
+          <span class="t-pill ok" id="pillServer"><span class="dot"></span>服务器已连</span>
+          <span class="t-pill ok" id="pillField"><span class="dot"></span><span id="txtFieldStatus">现场在线 · -62 dBm</span></span>
+          <span class="t-pill" id="pillUart"><span class="mono" id="hdrUartSummary">485: 19200 · 8E1</span></span>
+          <span class="t-pill">权限: 标准 (高危需现场确认)</span>
+        </div>
+      </div>
+
+      <div class="ah-right">
+        <button class="hdr-btn" id="btnToggleDockMode" title="切换右侧报文流与操作记录布局">报文流: 分屏同显</button>
+        <button class="hdr-btn" id="btnResync">重新同步</button>
+        <button class="hdr-btn danger" id="btnEndSession">结束协助</button>
+      </div>
+    </div>
+
+    <!-- 3. 二级导航坞 (对应小程序 6 项工具坞) -->
+    <div class="sub-navbar">
+      <div class="nav-tabs" id="mainNavTabs">
+        <button class="nav-tab" data-tab="tools">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          工具
+        </button>
+        <button class="nav-tab" data-tab="scan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 12l5.5-5.5"/></svg>
+          扫描
+        </button>
+        <button class="nav-tab on" data-tab="modscan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10M15 10v10"/></svg>
+          Modscan
+        </button>
+        <button class="nav-tab" data-tab="serial">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10l3 2.5L7 15M12 15h5"/></svg>
+          串口
+        </button>
+        <button class="nav-tab" data-tab="rtu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+          RTU
+        </button>
+        <button class="nav-tab" data-tab="module">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 6V3M15 6V3M9 21v-3M15 21v-3"/></svg>
+          模块
+        </button>
+      </div>
+
+      <div class="sync-indicator">
+        <span class="sync-badge">
+          现场模块: <b class="mono" id="syncBleName">BLE-ttt</b>
+          <span style="opacity:.4">|</span>
+          现场页面: <b id="syncFieldPage">Modscan</b>
+        </span>
+        <button class="btn sm" id="btnNotifyFieldPage">通知现场切到此页</button>
+      </div>
+    </div>
+
+    <!-- 现场离线全局可恢复横幅 (点击顶部仿真按钮可触发，对应图1痛点) -->
+    <div class="offline-banner" id="offlineBanner">
+      <div class="ob-left">
+        <span class="ob-mark">!</span>
+        <div>
+          <b>现场手机暂未响应（最近心跳 22:49:24）</b>
+          <span style="margin-left:8px;opacity:.85">现场可能锁屏、切到后台或移动网络波动；请提醒现场人员亮屏保持小程序在前台，或切换至 ESP32 网关直连模式。</span>
+        </div>
+      </div>
+      <div class="ob-actions">
+        <button class="btn sm primary" id="btnPingField">发送唤醒 Ping</button>
+        <button class="btn sm" id="btnDismissOffline">恢复在线演示</button>
+      </div>
+    </div>
+
+    <!-- 4. 主体双栏工作台 -->
+    <div class="workbench-body" id="workbenchBody">
+      <!-- 左栏：当前选中工具的主工作区 -->
+      <div class="main-stage" id="mainStage"></div>
+
+      <!-- 右栏：遥测坞（实时报文流 + 操作记录分屏） -->
+      <div class="telemetry-dock">
+        <div class="dock-header">
+          <div class="seg" id="dockModeSeg">
+            <button class="seg-i on" data-dmode="split">分屏同显</button>
+            <button class="seg-i" data-dmode="pkt">报文流 (<span id="pktCountBadge">6</span>)</button>
+            <button class="seg-i" data-dmode="ops">操作记录 (<span id="opsCountBadge">7</span>)</button>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn sm" id="btnClearLogs">清空</button>
+          </div>
+        </div>
+
+        <div class="dock-split" id="dockSplitContainer">
+          <!-- 上半屏：实时 TX/RX 报文流 (与固件灯语同色) -->
+          <div class="dock-pane" id="panePackets">
+            <div class="pane-bar">
+              <span>实时 485 报文流 (点击任意帧可复制 HEX)</span>
+              <span class="mono" style="font-size:11px">
+                <span style="color:var(--tx)">TX <b id="statTxBytes">48</b>B</span> ·
+                <span style="color:var(--rx)">RX <b id="statRxBytes">74</b>B</span>
+              </span>
+            </div>
+            <div class="log-list" id="packetList"></div>
+          </div>
+
+          <!-- 下半屏：操作记录 (带连续重复事件自动聚合 ×N) -->
+          <div class="dock-pane" id="paneOps">
+            <div class="pane-bar">
+              <span>协作与下发记录 (重复切页已自动折叠)</span>
+              <span style="font-size:11px;color:var(--ink-3)">最新在上</span>
+            </div>
+            <div class="log-list" id="opLogList"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. 底部状态与指令回执栏 (取代遮挡卡片的浮层黄条) -->
+    <div class="app-statusbar">
+      <div class="sb-left">
+        <button class="btn sm" id="btnFieldBack">‹ 现场返回上一页</button>
+        <div class="sb-cmd-banner" id="cmdReceiptBanner">
+          <span class="dot" id="cmdDot" style="width:7px;height:7px;border-radius:50%;background:var(--rx)"></span>
+          <span id="cmdStatusText">就绪 · 最近一次指令已由现场回执确认</span>
+        </div>
+      </div>
+      <div class="sb-right">
+        <span class="sb-kv">result: <b class="ok" id="sbResultText">FC03 OK (62ms)</b></span>
+        <span class="sb-kv">busy: <b id="sbBusyText">空闲 Idle</b></span>
+      </div>
+    </div>
+
+    <!-- Modscan / RTU 寄存器写入确认弹窗 -->
+    <div class="modal-mask" id="writeModal">
+      <div class="modal-card">
+        <div class="w-card-hd">
+          <div class="w-card-title" id="wmTitle">写入保持寄存器 40008</div>
+          <button class="btn sm" id="wmClose">关闭</button>
+        </div>
+        <div class="w-card-bd" style="display:flex;flex-direction:column;gap:12px">
+          <div style="font-size:12px;color:var(--ink-2)" id="wmSub">从站 #1 · 地址 0x0007 · 功能码 FC06 单寄存器写（自动暂停扫描并读回校验）</div>
+          <div class="f-item">
+            <div class="f-label"><span>写入新值 (十进制或 0x 十六进制)</span><span class="tag danger">高危 · 需现场确认</span></div>
+            <input class="ipt mono" id="wmInput" value="51">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <span style="font-size:11.5px;color:var(--ink-3)">快捷预设：</span>
+            <button class="btn sm wm-quick" data-v="0">0</button>
+            <button class="btn sm wm-quick" data-v="50">50</button>
+            <button class="btn sm wm-quick" data-v="100">100</button>
+            <button class="btn sm wm-quick" data-v="220">220</button>
+            <button class="btn sm wm-quick" data-v="65535">65535</button>
+          </div>
+          <div class="frame-box">
+            <span>将下发帧 (含 CRC16):</span>
+            <b id="wmFramePreview">01 06 00 07 00 33 79 C8</b>
+          </div>
+        </div>
+        <div class="w-card-ft">
+          <span>写完自动执行 FC03 读回比对</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn sm" id="wmCancel">取消</button>
+            <button class="btn sm primary" id="wmConfirm">下发写入指令</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== 三、四张原图对应界面平铺速览 ============================== -->
+  <h2 class="board-title">二、四张原截图 vs. 改版后界面结构平铺速览</h2>
+  <p class="board-sub">以下平铺展示您提供的 4 张截图（模块、RTU、串口、Modscan）在改版后的桌面布局重点，方便您与开发团队直接对照实现。</p>
+
+  <div class="board-grid">
+    <!-- 速览 1：模块设置 -->
+    <div class="mini-win">
+      <div class="mini-hd">
+        <span>对应截图 1 ·「模块设置」改版（7个竖排红框 → 双卡并排 + 分段直选 + 组合预览）</span>
+        <span class="mono" style="opacity:.75">pages/tools/uartConfig</span>
+      </div>
+      <div class="mini-bd">
+        <div style="display:grid;grid-template-columns:1fr 1.35fr;gap:12px">
+          <div class="w-card">
+            <div class="w-card-hd"><div class="w-card-title">蓝牙广播标识</div><span class="tag danger">高危</span></div>
+            <div class="w-card-bd" style="display:flex;flex-direction:column;gap:8px">
+              <div class="f-label"><span>广播名 (1~7 字符)</span><span class="mono" style="color:var(--ink-3)">当前: BLE-ttt</span></div>
+              <input class="ipt mono sm" value="BLE-ttt" readonly>
+              <div class="f-hint">改完手机蓝牙列表跟着变，不断当前连接</div>
+              <button class="btn sm danger block" onclick="switchToTab('module')">写入名称 (在上方工作台体验)</button>
+            </div>
+          </div>
+          <div class="w-card">
+            <div class="w-card-hd">
+              <div class="w-card-title">485 侧串口参数</div>
+              <span class="mono" style="font-size:15px;font-weight:700;color:var(--accent)">19200 · 8E1</span>
+            </div>
+            <div class="w-card-bd" style="display:flex;flex-direction:column;gap:8px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div><div class="f-label">波特率</div><input class="ipt mono sm" value="19200" readonly></div>
+                <div><div class="f-label">数据位</div><div class="seg"><span class="seg-i on">8 位</span><span class="seg-i">7 位</span></div></div>
+                <div><div class="f-label">校验位</div><div class="seg"><span class="seg-i">N 无</span><span class="seg-i">O 奇</span><span class="seg-i on">E 偶</span></div></div>
+                <div><div class="f-label">停止位</div><div class="seg"><span class="seg-i on">1 位</span><span class="seg-i">2 位</span></div></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:4px">
+                <button class="btn sm" style="flex:1" onclick="switchToTab('module')">读当前参数</button>
+                <button class="btn sm primary" style="flex:1.5" onclick="switchToTab('module')">写入串口参数 · 19200 8E1</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 速览 2：RTU 快速设置 -->
+    <div class="mini-win">
+      <div class="mini-hd">
+        <span>对应截图 2 ·「RTU 快速设置」改版（红框堆叠 → 模板对比表 + 内联改值 + 读回校验）</span>
+        <span class="mono" style="opacity:.75">pages/tools/rtuConfig</span>
+      </div>
+      <div class="mini-bd">
+        <div class="w-card">
+          <div class="w-card-hd">
+            <div class="w-card-title">目标站号 #1 · 模板 <span class="mono">ref-3 (CD194E-9S4)</span></div>
+            <button class="btn sm primary" onclick="switchToTab('rtu')">读取设备现值 (FC03)</button>
+          </div>
+          <table class="data-tbl">
+            <thead>
+              <tr><th>参数项</th><th>地址 · 功能码</th><th>模板默认值</th><th>设备现值</th><th>修改目标值</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>从站地址</b></td>
+                <td class="mono">0x0100 · FC06</td>
+                <td class="mono">1</td>
+                <td><span class="val-pill">1</span></td>
+                <td><input class="ipt sm mono" value="1" style="width:70px" readonly></td>
+                <td><button class="btn sm danger" onclick="switchToTab('rtu')">写入</button></td>
+              </tr>
+              <tr>
+                <td><b>校验位</b></td>
+                <td class="mono">0x0101 · FC06</td>
+                <td class="mono">无校验 N (0)</td>
+                <td><span class="val-pill">偶校验 E (2)</span></td>
+                <td><span class="tag info">偶校验 E (0x0002)</span></td>
+                <td><button class="btn sm danger" onclick="switchToTab('rtu')">写入</button></td>
+              </tr>
+              <tr>
+                <td><b>波特率</b></td>
+                <td class="mono">0x0102 · FC06</td>
+                <td class="mono">9600 (2)</td>
+                <td><span class="val-pill">19200 (3)</span></td>
+                <td><span class="tag info">19200 (0x0003)</span></td>
+                <td><button class="btn sm danger" onclick="switchToTab('rtu')">写入</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 速览 3：串口调试 -->
+    <div class="mini-win">
+      <div class="mini-hd">
+        <span>对应截图 3 ·「串口调试」改版（6个分离框 → 一体化发帧器 + 实时 CRC16 + 控制台）</span>
+        <span class="mono" style="opacity:.75">pages/tools/serialDebug</span>
+      </div>
+      <div class="mini-bd">
+        <div class="w-card">
+          <div class="w-card-hd">
+            <div class="w-card-title">帧编辑器 (自动计算追加 CRC16)</div>
+            <div style="display:flex;gap:6px">
+              <span class="tag tx">TX 赭红</span>
+              <span class="tag ok">RX 墨绿</span>
+            </div>
+          </div>
+          <div class="w-card-bd" style="display:flex;flex-direction:column;gap:8px">
+            <div class="frame-box">
+              <span class="mono" style="color:var(--ink)">01 03 00 00 00 0A</span>
+              <span class="tag info">追加 CRC16: C5 CD</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:12px;color:var(--ink-2)">模式: HEX · 循环间隔: 1000 ms</span>
+              <div style="display:flex;gap:8px">
+                <button class="btn sm primary" onclick="switchToTab('serial')">发送一帧</button>
+                <button class="btn sm danger" onclick="switchToTab('serial')">启动循环发送</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 速览 4：Modscan 四区表格 -->
+    <div class="mini-win">
+      <div class="mini-hd">
+        <span>对应截图 4 ·「Modscan」改版（补齐右侧十进制/HEX双列寄存器表 + 变值高亮 + 点击改写）</span>
+        <span class="mono" style="opacity:.75">pages/modbus/modscan32</span>
+      </div>
+      <div class="mini-bd">
+        <div class="w-card">
+          <div class="w-card-hd">
+            <div class="w-card-title">03 保持寄存器 (4x) · 站号 #1 · 40001~40010</div>
+            <span class="tag ok">轮询中 · 500ms</span>
+          </div>
+          <table class="data-tbl">
+            <thead>
+              <tr><th>寄存器地址</th><th>HEX 偏移</th><th>当前数值 (Unsigned)</th><th>HEX 原始值</th><th>状态 / 写入</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono"><b>40001</b></td>
+                <td class="mono">0x0000</td>
+                <td><span class="val-pill">220</span></td>
+                <td class="mono" style="color:var(--accent)">0x00DC</td>
+                <td><button class="btn sm" onclick="switchToTab('modscan')">修改 ›</button></td>
+              </tr>
+              <tr>
+                <td class="mono"><b>40008</b></td>
+                <td class="mono">0x0007</td>
+                <td><span class="val-pill chg">51 ↑</span></td>
+                <td class="mono" style="color:var(--accent)">0x0033</td>
+                <td><button class="btn sm" onclick="switchToTab('modscan')">修改 ›</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== 四、桌面端改版清单 ============================== -->
+  <h2 class="board-title">三、桌面端 UI/UX 改版对照清单（供前端/Electron/Tauri 实现直接落地）</h2>
+  <p class="board-sub">保持现有通信协议、指令名与状态字段不变，仅重构桌面端组件层级与布局网格。</p>
+
+  <table class="diff">
+    <thead>
+      <tr>
+        <th style="width:150px">界面 / 模块</th>
+        <th style="width:42%">原截图存在的问题</th>
+        <th>专业设计改版方案（本文件已实现）</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>全局色彩与灯语</td>
+        <td>全黑底配暗红细框，几乎所有卡片都标红「高危」，产生严重视觉疲劳；缺乏与小程序端一致的品牌感。</td>
+        <td>引入与小程序 <span class="mono">ui-preview.html</span> 同源的<b>深蓝灰结构色 + WS2812B 固件灯语色</b>（发数据 TX <code>#e0705e</code> 赭红、收数据 RX <code>#56b881</code> 墨绿），并支持 Dark Pro / Light Sync 一键切换。</td>
+      </tr>
+      <tr>
+        <td>模块设置页<br><code>模块</code> (图1)</td>
+        <td>当前串口、广播名、写入名称、波特率、数据位、校验位、停止位拆成 7 个竖排大框；每次修改要点小铅笔图标；底部黄色回执浮层直接挡住「读当前参数」。</td>
+        <td>拆分为<b>「蓝牙广播标识卡」+「485 侧串口参数卡」</b>双栏；串口卡顶部大字实时显示组合预览 <code>19200 · 8E1</code> 及「未写入」脏标记；数据位/校验位/停止位改为分段按钮一键直选；下发回执移入底部固定状态栏。</td>
+      </tr>
+      <tr>
+        <td>RTU 快速设置<br><code>RTU</code> (图2)</td>
+        <td>每个寄存器占一个大红框，显示「未读取现值」，无法直观对比「模板默认值 vs 设备现值 vs 准备写入的新值」。</td>
+        <td>顶部集成「目标站号 + 模板切换 + 读取设备现值 (FC03)」工具条；下方采用<b>结构化参数对照表</b>，同屏展示寄存器地址、模板值、读取现值、内联枚举选择器及实时报文预览，支持单项写入与写后自动读回校验。</td>
+      </tr>
+      <tr>
+        <td>串口调试页<br><code>串口</code> (图3)</td>
+        <td>「发送一帧」和「循环发送」变成顶部两个孤立的大框，真正的「报文内容」却缩在下方单行铅笔框里，且同屏看不到收发回包。</td>
+        <td>合并为<b>一体化帧发送台</b>：模式切换 (HEX/ASCII)、预设快捷帧、等宽 HEX 输入框、自动计算的 <code>CRC16</code> 高亮尾缀、循环间隔与发送按钮紧凑排布；下方直接内嵌收发分色控制台。</td>
+      </tr>
+      <tr>
+        <td>Modscan 页<br><code>Modscan</code> (图4)</td>
+        <td>左半屏只有 6 个参数设置框，完全看不到扫描出来的寄存器列表与数值变化。</td>
+        <td>采用<b>「左参数控制栏 (290px) + 右实时寄存器网格」</b>布局；顶部四区切换（03 保持 / 04 输入 / 02 离散 / 01 线圈）；表格实时展示 DEC、HEX、变值高亮闪烁，点击任意行直接弹出 FC06 写入框。</td>
+      </tr>
+      <tr>
+        <td>右侧操作记录与报文流</td>
+        <td>占掉窗口近一半宽度，全是重复的「已通知现场打开工具」「现场没响应」巨型卡片；而核心「报文流」却要另点按钮。</td>
+        <td>右侧升级为<b>「实时 485 报文流 + 协作记录」上下分屏坞</b>（可切单屏）；连续重复的切页/离线记录自动折叠并显示 <code>×3</code> 计数徽章；现场离线提炼为顶部醒目可恢复横幅。</td>
+      </tr>
+      <tr>
+        <td>底部状态栏</td>
+        <td>右下角裸露英文 <code>result 应答无法识别 busy 空闲</code>，缺乏可读性。</td>
+        <td>升级为<b>工程状态栏</b>：左侧为「现场返回」+「实时指令下发进度胶囊」，右侧为带色彩语义的最近应答耗时 <code>FC03 OK (62ms)</code> 与总线状态 <code>空闲 Idle / 轮询中 Polling</code>。</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+/* =====================================================================
+   Modbus 远程调试台 · 交互逻辑与状态机
+   支持全部 6 大导航页切换、参数修改、CRC16 实时计算、Modscan 轮询仿真、
+   RTU 批量读取/单项写入、深浅主题切换、现场离线告警与日志聚合。
+   ===================================================================== */
+(function () {
+  var state = {
+    activeTab: 'modscan',
+    theme: 'dark',
+    fieldOnline: true,
+    dockMode: 'split', // 'split' | 'pkt' | 'ops'
+    sessionConnected: true,
+    sessionCode: 'URFBBR3',
+    busyText: '空闲 Idle',
+    resultText: 'FC03 OK (62ms)',
+    resultOk: true,
+    cmdText: '就绪 · 最近一次指令已由现场回执确认',
+    cmdPending: false,
+
+    // 1. 模块设置状态 (对应截图 1)
+    module: {
+      currentBleName: 'BLE-ttt',
+      editBleName: 'BLE-ttt',
+      savedBaud: '19200',
+      savedDataBits: '8',
+      savedParity: 'E',
+      savedStopBits: '1',
+      baud: '19200',
+      dataBits: '8',
+      parity: 'E',
+      stopBits: '1'
+    },
+
+    // 2. RTU 快速设置状态 (对应截图 2)
+    rtu: {
+      slaveId: 1,
+      tplName: 'ref-3 (CD194E-9S4 · 站号/校验/波特率)',
+      lastReadTime: '22:49:28',
+      hasRead: true,
+      items: [
+        { key: 'addr', name: '从站地址', reg: '0x0100', fc: 'FC06', type: 'num', tplVal: '1', curVal: '1', curHex: '0x0001', targetVal: '1', highRisk: true },
+        { key: 'parity', name: '校验位', reg: '0x0101', fc: 'FC06', type: 'enum', tplVal: '无校验 N (0)', curVal: '偶校验 E', curHex: '0x0002', targetVal: '2', options: [{v:'0',l:'0 · 无校验 N'},{v:'1',l:'1 · 奇校验 O'},{v:'2',l:'2 · 偶校验 E'}], highRisk: true },
+        { key: 'baud', name: '波特率', reg: '0x0102', fc: 'FC06', type: 'enum', tplVal: '9600 (2)', curVal: '19200', curHex: '0x0003', targetVal: '3', options: [{v:'0',l:'0 · 2400'},{v:'1',l:'1 · 4800'},{v:'2',l:'2 · 9600'},{v:'3',l:'3 · 19200'},{v:'4',l:'4 · 38400'},{v:'5',l:'5 · 115200'}], highRisk: true },
+        { key: 'year', name: '出厂校准年份', reg: '0x0103', fc: 'FC06', type: 'num', tplVal: '2026', curVal: '2026', curHex: '0x07EA', targetVal: '2026', highRisk: false }
+      ],
+      lastVerify: { ok: true, reg: '0x0102 (波特率)', writeVal: '19200 (0x0003)', readback: '19200 (0x0003)', costMs: 58, frame: '01 06 01 02 00 03 68 37' }
+    },
+
+    // 3. 串口调试状态 (对应截图 3)
+    serial: {
+      mode: 'HEX',
+      crcOn: true,
+      appendCr: false,
+      appendLf: false,
+      payload: '01 03 00 00 00 0A',
+      loopMs: 1000,
+      looping: false
+    },
+
+    // 4. Modscan 状态 (对应截图 4)
+    modscan: {
+      area: '4x', // '4x' | '3x' | '1x' | '0x'
+      slaveId: 1,
+      startAddr: 40001,
+      count: 10,
+      interval: 500,
+      format: 'Unsigned',
+      byteOrder: 'MSB',
+      polling: false,
+      round: 12,
+      okCount: 128,
+      timeoutCount: 2,
+      errCount: 0,
+      rows: [
+        { addr: 40001, hexAddr: '0x0000', desc: 'A相电压 (0.1V)', val: 2201, hex: '0x0899', changed: false, ts: '22:49:08' },
+        { addr: 40002, hexAddr: '0x0001', desc: 'B相电压 (0.1V)', val: 2214, hex: '0x08A6', changed: false, ts: '22:49:08' },
+        { addr: 40003, hexAddr: '0x0002', desc: 'C相电压 (0.1V)', val: 2198, hex: '0x0896', changed: false, ts: '22:49:08' },
+        { addr: 40004, hexAddr: '0x0003', desc: 'A相电流 (0.01A)', val: 520, hex: '0x0208', changed: false, ts: '22:49:08' },
+        { addr: 40005, hexAddr: '0x0004', desc: '有功总功率 (W)', val: 3420, hex: '0x0D5C', changed: false, ts: '22:49:08' },
+        { addr: 40006, hexAddr: '0x0005', desc: '功率因数 (0.001)', val: 985, hex: '0x03D9', changed: false, ts: '22:49:08' },
+        { addr: 40007, hexAddr: '0x0006', desc: '电网频率 (0.01Hz)', val: 4998, hex: '0x1386', changed: false, ts: '22:49:08' },
+        { addr: 40008, hexAddr: '0x0007', desc: '越限告警状态字', val: 51, hex: '0x0033', changed: true, ts: '22:49:08' },
+        { addr: 40009, hexAddr: '0x0008', desc: 'DI 开关量输入状态', val: 0, hex: '0x0000', changed: false, ts: '22:49:08' },
+        { addr: 40010, hexAddr: '0x0009', desc: '通信从站地址备份', val: 1, hex: '0x0001', changed: false, ts: '22:49:08' }
+      ]
+    },
+
+    // 5. 从站扫描状态
+    scan: {
+      startId: 1,
+      endId: 247,
+      probeReg: '0x0064',
+      timeoutMs: 80,
+      scanning: false,
+      currentId: 88,
+      hits: [
+        { id: 1, baud: '19200 8E1', regVal: '0x0064 = 100', rtt: '34ms' },
+        { id: 2, baud: '19200 8E1', regVal: '0x0064 = 220', rtt: '41ms' },
+        { id: 17, baud: '19200 8E1', regVal: '0x0064 = 1', rtt: '52ms' }
+      ]
+    },
+
+    // 右栏：实时报文流
+    txBytes: 48,
+    rxBytes: 74,
+    packets: [
+      { dir: 'TX', ts: '22:49:33.104', len: 8, hex: '01 03 00 00 00 0A C5 CD', note: 'FC03 读保持 #1 (40001×10)' },
+      { dir: 'RX', ts: '22:49:33.166', len: 25, hex: '01 03 14 08 99 08 A6 08 96 02 08 0D 5C 03 D9 13 86 00 33 00 00 00 01 7E 4B', note: 'CRC 通过 · 10 个寄存器 (62ms)' },
+      { dir: 'TX', ts: '22:49:28.410', len: 8, hex: '01 03 01 00 00 04 45 F5', note: 'FC03 读取 RTU 模板参数 (4项)' },
+      { dir: 'RX', ts: '22:49:28.468', len: 13, hex: '01 03 08 00 01 00 02 00 03 07 EA B8 19', note: 'CRC 通过 · 站号1 / 偶校验 / 19200' },
+      { dir: 'TX', ts: '22:49:20.012', len: 8, hex: '01 06 00 07 00 33 79 C8', note: 'FC06 写寄存器 40008 = 51' },
+      { dir: 'RX', ts: '22:49:20.070', len: 8, hex: '01 06 00 07 00 33 79 C8', note: 'FC06 写回执一致 (58ms)' }
+    ],
+
+    // 右栏：协作操作记录 (已对原截图中连续重复的记录做 ×N 聚合)
+    ops: [
+      { ts: '22:49:33', type: 'ok', title: '已通知现场打开「模块」', desc: '现场小程序已同步切页', count: 2 },
+      { ts: '22:49:24', type: 'ok', title: '已通知现场打开「RTU」', desc: '载入模板 ref-3', count: 2 },
+      { ts: '22:48:38', type: 'info', title: '已重新同步现场状态', desc: '获取串口 19200·8E1 及广播名 BLE-ttt', count: 1 },
+      { ts: '22:48:31', type: 'warn', title: '现场短暂未响应 (已恢复)', desc: '现场可能切后台，重新同步后已恢复心跳', count: 2 },
+      { ts: '22:47:55', type: 'ok', title: '已通知现场打开「工具 / 扫描」', desc: '会话初期导航同步', count: 4 },
+      { ts: '22:47:24', type: 'info', title: '接入会话: URFBBR3', desc: '现场已确认授权 · 标准权限', count: 1 }
+    ]
+  };
+
+  var modscanTimer = null;
+  var serialLoopTimer = null;
+  var editingRowIdx = null;
+
+  // 标准 Modbus CRC16 计算
+  function calcCrc16Hex(hexStr) {
+    var clean = (hexStr || '').replace(/[^0-9a-fA-F]/g, '');
+    if (clean.length < 2 || clean.length % 2 !== 0) return '—';
+    var crc = 0xFFFF;
+    for (var i = 0; i < clean.length; i += 2) {
+      var byte = parseInt(clean.substr(i, 2), 16);
+      crc ^= byte;
+      for (var j = 0; j < 8; j++) {
+        if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+        else crc = crc >> 1;
+      }
+    }
+    var lo = (crc & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+    var hi = ((crc >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+    return lo + ' ' + hi;
+  }
+
+  function nowTimeStr(withMs) {
+    var d = new Date();
+    var base = [d.getHours(), d.getMinutes(), d.getSeconds()].map(function (n) { return String(n).padStart(2, '0'); }).join(':');
+    return withMs ? base + '.' + String(d.getMilliseconds()).padStart(3, '0') : base;
+  }
+
+  function addOpLog(type, title, desc) {
+    var top = state.ops[0];
+    if (top && top.title === title) {
+      top.count = (top.count || 1) + 1;
+      top.ts = nowTimeStr(false);
+      if (desc) top.desc = desc;
+    } else {
+      state.ops.unshift({ ts: nowTimeStr(false), type: type, title: title, desc: desc || '', count: 1 });
+    }
+    renderTelemetryDock();
+  }
+
+  function addPacket(dir, hex, note) {
+    var bytes = (hex.replace(/[^0-9a-fA-F]/g, '').length / 2) | 0;
+    if (dir === 'TX') state.txBytes += bytes;
+    if (dir === 'RX') state.rxBytes += bytes;
+    state.packets.unshift({
+      dir: dir,
+      ts: nowTimeStr(true),
+      len: bytes,
+      hex: hex.toUpperCase(),
+      note: note || ''
+    });
+    renderTelemetryDock();
+  }
+
+  function triggerCommandBanner(pendingText, doneText, resultLabel, isOk) {
+    state.cmdPending = true;
+    state.cmdText = pendingText;
+    state.busyText = '执行中 Busy';
+    renderHeaderAndStatus();
+    setTimeout(function () {
+      state.cmdPending = false;
+      state.cmdText = doneText || '已下发并收到现场确认回执';
+      state.busyText = state.modscan.polling ? '轮询中 Polling' : '空闲 Idle';
+      if (resultLabel) {
+        state.resultText = resultLabel;
+        state.resultOk = isOk !== false;
+      }
+      renderHeaderAndStatus();
+    }, 650);
+  }
+
+  // ==================== 渲染顶栏与底栏 ====================
+  function renderHeaderAndStatus() {
+    var m = state.module;
+    var uartStr = m.savedBaud + ' · ' + m.savedDataBits + m.savedParity + m.savedStopBits;
+    document.getElementById('hdrUartSummary').textContent = '485: ' + uartStr;
+    document.getElementById('syncBleName').textContent = m.currentBleName;
+
+    var tabNames = { tools: '工具总览', scan: '从站扫描', modscan: 'Modscan', serial: '串口', rtu: 'RTU', module: '模块' };
+    document.getElementById('syncFieldPage').textContent = tabNames[state.activeTab] || state.activeTab;
+
+    // 现场在线/离线状态
+    var pillField = document.getElementById('pillField');
+    var txtField = document.getElementById('txtFieldStatus');
+    var banner = document.getElementById('offlineBanner');
+    var btnOffline = document.getElementById('btnToggleOffline');
+    if (state.fieldOnline) {
+      pillField.className = 't-pill ok';
+      txtField.textContent = '现场在线 · -62 dBm';
+      banner.classList.remove('show');
+      btnOffline.textContent = '现场状态：在线 (点击模拟离线)';
+      btnOffline.classList.remove('on');
+    } else {
+      pillField.className = 't-pill warn';
+      txtField.textContent = '现场离线 · 等待重连';
+      banner.classList.add('show');
+      btnOffline.textContent = '现场状态：离线告警中';
+      btnOffline.classList.add('on');
+    }
+
+    // 底部状态栏
+    var cmdBanner = document.getElementById('cmdReceiptBanner');
+    var cmdDot = document.getElementById('cmdDot');
+    document.getElementById('cmdStatusText').textContent = state.cmdText;
+    if (state.cmdPending) {
+      cmdBanner.classList.add('pending');
+      cmdDot.style.background = 'var(--warn)';
+    } else {
+      cmdBanner.classList.remove('pending');
+      cmdDot.style.background = 'var(--rx)';
+    }
+
+    var sbRes = document.getElementById('sbResultText');
+    sbRes.textContent = state.resultText;
+    sbRes.className = state.resultOk ? 'ok' : 'err';
+    document.getElementById('sbBusyText').textContent = state.busyText;
+
+    // 导航高亮
+    var tabs = document.querySelectorAll('#mainNavTabs .nav-tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('on', tabs[i].getAttribute('data-tab') === state.activeTab);
+    }
+    var simBtns = document.querySelectorAll('.sim-pill[data-goto]');
+    for (var j = 0; j < simBtns.length; j++) {
+      simBtns[j].classList.toggle('on', simBtns[j].getAttribute('data-goto') === state.activeTab);
+    }
+  }
+
+  // ==================== 渲染右栏：报文流与操作记录 ====================
+  function renderTelemetryDock() {
+    document.getElementById('pktCountBadge').textContent = state.packets.length;
+    document.getElementById('opsCountBadge').textContent = state.ops.length;
+    document.getElementById('statTxBytes').textContent = state.txBytes;
+    document.getElementById('statRxBytes').textContent = state.rxBytes;
+
+    var panePackets = document.getElementById('panePackets');
+    var paneOps = document.getElementById('paneOps');
+    panePackets.style.display = (state.dockMode === 'ops') ? 'none' : 'flex';
+    paneOps.style.display = (state.dockMode === 'pkt') ? 'none' : 'flex';
+
+    var segs = document.querySelectorAll('#dockModeSeg .seg-i');
+    for (var i = 0; i < segs.length; i++) {
+      segs[i].classList.toggle('on', segs[i].getAttribute('data-dmode') === state.dockMode);
+    }
+
+    // 报文列表
+    var pktHtml = '';
+    for (var p = 0; p < state.packets.length; p++) {
+      var item = state.packets[p];
+      var cls = item.dir === 'TX' ? 'tx' : (item.dir === 'RX' ? 'rx' : 'err');
+      pktHtml += '<div class="pkt-line ' + cls + '" data-copyhex="' + item.hex + '" title="点击复制此帧 HEX">' +
+        '<div class="pkt-meta">' +
+          '<span><span class="pkt-dir">' + item.dir + '</span> ' + item.len + 'B · ' + (item.note || '') + '</span>' +
+          '<span>' + item.ts + '</span>' +
+        '</div>' +
+        '<div>' + item.hex + '</div>' +
+      '</div>';
+    }
+    document.getElementById('packetList').innerHTML = pktHtml || '<div style="padding:20px;text-align:center;color:var(--ink-3)">暂无报文</div>';
+
+    // 操作记录列表
+    var opHtml = '';
+    for (var k = 0; k < state.ops.length; k++) {
+      var op = state.ops[k];
+      opHtml += '<div class="op-item ' + op.type + '">' +
+        '<div class="op-top">' +
+          '<span>' + op.ts + '</span>' +
+          (op.count > 1 ? '<span class="op-cnt">连续 ×' + op.count + '</span>' : '') +
+        '</div>' +
+        '<div class="op-title">' + op.title + '</div>' +
+        (op.desc ? '<div class="op-desc">' + op.desc + '</div>' : '') +
+      '</div>';
+    }
+    document.getElementById('opLogList').innerHTML = opHtml || '<div style="padding:20px;text-align:center;color:var(--ink-3)">暂无操作记录</div>';
+  }
+
+  // ==================== 渲染主工作区 6 大视图 ====================
+  function renderMainStage() {
+    var stage = document.getElementById('mainStage');
+    var tab = state.activeTab;
+
+    if (tab === 'module') {
+      stage.innerHTML = buildModuleView();
+      bindModuleEvents();
+    } else if (tab === 'rtu') {
+      stage.innerHTML = buildRtuView();
+      bindRtuEvents();
+    } else if (tab === 'serial') {
+      stage.innerHTML = buildSerialView();
+      bindSerialEvents();
+    } else if (tab === 'modscan') {
+      stage.innerHTML = buildModscanView();
+      bindModscanEvents();
+    } else if (tab === 'scan') {
+      stage.innerHTML = buildScanView();
+      bindScanEvents();
+    } else {
+      stage.innerHTML = buildToolsOverview();
+      bindToolsOverviewEvents();
+    }
+  }
+
+  // -------------------- 视图 1：模块设置 (解决截图 1 痛点) --------------------
+  function buildModuleView() {
+    var m = state.module;
+    var previewCombo = m.baud + ' · ' + m.dataBits + m.parity + m.stopBits;
+    var savedCombo = m.savedBaud + ' · ' + m.savedDataBits + m.savedParity + m.savedStopBits;
+    var isDirty = previewCombo !== savedCombo;
+
+    return '' +
+      '<div class="w-card mark-ok">' +
+        '<div class="w-card-hd">' +
+          '<div class="w-card-title">当前模块 485 侧运行参数</div>' +
+          '<button class="btn sm" id="btnReadModuleParams">读当前参数 (AT/BLE)</button>' +
+        '</div>' +
+        '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px">' +
+          '<div>' +
+            '<div style="font-size:11.5px;color:var(--ink-3)">模块当前生效串口参数（改完模块后，下游 485 表计必须设为同参数）</div>' +
+            '<div class="mono" style="font-size:24px;font-weight:700;color:var(--ink);margin-top:2px">' + savedCombo + '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:18px">' +
+            '<div><div style="font-size:11px;color:var(--ink-3)">蓝牙信号</div><div class="mono" style="font-size:15px;font-weight:600;color:var(--rx)">-62 dBm</div></div>' +
+            '<div><div style="font-size:11px;color:var(--ink-3)">固件灯语</div><div style="font-size:13px"><span class="tag tx">TX 赭红</span> <span class="tag ok">RX 墨绿</span></div></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      /* 模块参数：只保留能改、可回读校验的 485 侧串口参数；广播名远程改不了，这里不放改名 UI */
+      '<div class="w-card ' + (isDirty ? 'mark-warn' : '') + '">' +
+          '<div class="w-card-hd">' +
+            '<div class="w-card-title">485 侧串口参数配置<span class="w-card-sub">告别逐框点铅笔</span></div>' +
+            (isDirty ? '<span class="tag warn">未写入 · 待下发</span>' : '<span class="tag ok">与模块一致</span>') +
+          '</div>' +
+          '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:12px">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-radius:8px;background:var(--win-panel);border:1px solid var(--win-line-soft)">' +
+              '<span style="font-size:12px;color:var(--ink-2)">组合预览 (即将写入)</span>' +
+              '<span class="mono" style="font-size:18px;font-weight:700;color:var(--accent)">' + previewCombo + '</span>' +
+            '</div>' +
+
+            '<div class="form-grid">' +
+              '<div class="f-item">' +
+                '<div class="f-label"><span>波特率 (bps)</span></div>' +
+                '<select class="ipt mono" id="selModBaud">' +
+                  ['2400','4800','9600','19200','38400','57600','115200'].map(function(b){
+                    return '<option value="' + b + '" ' + (m.baud === b ? 'selected' : '') + '>' + b + '</option>';
+                  }).join('') +
+                '</select>' +
+              '</div>' +
+              '<div class="f-item">' +
+                '<div class="f-label"><span>数据位</span></div>' +
+                '<div class="seg" id="segDataBits">' +
+                  '<button class="seg-i ' + (m.dataBits === '8' ? 'on' : '') + '" data-v="8">8 位</button>' +
+                  '<button class="seg-i ' + (m.dataBits === '7' ? 'on' : '') + '" data-v="7">7 位</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="f-item">' +
+                '<div class="f-label"><span>校验位</span></div>' +
+                '<div class="seg" id="segParity">' +
+                  '<button class="seg-i ' + (m.parity === 'N' ? 'on' : '') + '" data-v="N">N 无</button>' +
+                  '<button class="seg-i ' + (m.parity === 'O' ? 'on' : '') + '" data-v="O">O 奇</button>' +
+                  '<button class="seg-i ' + (m.parity === 'E' ? 'on' : '') + '" data-v="E">E 偶</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="f-item">' +
+                '<div class="f-label"><span>停止位</span></div>' +
+                '<div class="seg" id="segStopBits">' +
+                  '<button class="seg-i ' + (m.stopBits === '1' ? 'on' : '') + '" data-v="1">1 位</button>' +
+                  '<button class="seg-i ' + (m.stopBits === '2' ? 'on' : '') + '" data-v="2">2 位</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+
+            '<div style="display:flex;gap:10px;margin-top:4px">' +
+              '<button class="btn" id="btnResetUartForm">恢复模块当前值</button>' +
+              '<button class="btn ' + (isDirty ? 'danger' : 'primary') + '" style="flex:1" id="btnCommitUart">▲ 写入串口参数 · ' + previewCombo + ' (高危)</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="w-card-ft">' +
+            '<span>提示：改完模块 485 侧参数后，下游表计必须改成同一组，否则总线无法应答。</span>' +
+          '</div>' +
+        '</div>';
+  }
+
+  function bindModuleEvents() {
+    var selBaud = document.getElementById('selModBaud');
+    if (selBaud) {
+      selBaud.addEventListener('change', function () {
+        state.module.baud = selBaud.value;
+        renderMainStage();
+      });
+    }
+    function bindSeg(id, key) {
+      var seg = document.getElementById(id);
+      if (!seg) return;
+      var btns = seg.querySelectorAll('.seg-i');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function (e) {
+          state.module[key] = e.currentTarget.getAttribute('data-v');
+          renderMainStage();
+        });
+      }
+    }
+    bindSeg('segDataBits', 'dataBits');
+    bindSeg('segParity', 'parity');
+    bindSeg('segStopBits', 'stopBits');
+
+    var btnReset = document.getElementById('btnResetUartForm');
+    if (btnReset) {
+      btnReset.addEventListener('click', function () {
+        var m = state.module;
+        m.baud = m.savedBaud; m.dataBits = m.savedDataBits; m.parity = m.savedParity; m.stopBits = m.savedStopBits;
+        renderMainStage();
+      });
+    }
+    var btnCommit = document.getElementById('btnCommitUart');
+    if (btnCommit) {
+      btnCommit.addEventListener('click', function () {
+        var m = state.module;
+        m.savedBaud = m.baud; m.savedDataBits = m.dataBits; m.savedParity = m.parity; m.savedStopBits = m.stopBits;
+        var combo = m.savedBaud + ' · ' + m.savedDataBits + m.savedParity + m.savedStopBits;
+        addOpLog('ok', '写入模块 485 串口参数: ' + combo, '高危参数已同步至现场模块');
+        triggerCommandBanner('已下发串口参数 ' + combo + '，等待现场回执...', '模块 485 串口参数已更新为 ' + combo, 'UART CFG OK (51ms)', true);
+        renderMainStage();
+      });
+    }
+    var btnRead = document.getElementById('btnReadModuleParams');
+    if (btnRead) {
+      btnRead.addEventListener('click', function () {
+        addOpLog('info', '读取现场模块当前参数', '回传: ' + state.module.savedBaud + ' ' + state.module.savedDataBits + state.module.savedParity + state.module.savedStopBits);
+        triggerCommandBanner('已下发读模块参数指令，等现场回执...', '模块参数读取完成', 'READ CFG OK (39ms)', true);
+      });
+    }
+  }
+
+  // -------------------- 视图 2：RTU 快速设置 (解决截图 2 痛点) --------------------
+  function buildRtuView() {
+    var r = state.rtu;
+    var rowsHtml = '';
+    for (var i = 0; i < r.items.length; i++) {
+      var it = r.items[i];
+      var ctrlHtml = '';
+      if (it.type === 'enum') {
+        ctrlHtml = '<select class="ipt sm mono rtu-target-ipt" data-idx="' + i + '" style="width:155px">' +
+          it.options.map(function (op) {
+            return '<option value="' + op.v + '" ' + (it.targetVal === op.v ? 'selected' : '') + '>' + op.l + '</option>';
+          }).join('') +
+        '</select>';
+      } else {
+        ctrlHtml = '<input class="ipt sm mono rtu-target-ipt" data-idx="' + i + '" value="' + it.targetVal + '" style="width:155px">';
+      }
+
+      var numVal = parseInt(it.targetVal, 10) || 0;
+      var regHex = it.reg.replace('0x', '');
+      var rawFrame = String(r.slaveId).padStart(2, '0') + ' 06 ' + regHex.substr(0, 2) + ' ' + regHex.substr(2, 2) + ' ' + ((numVal >> 8) & 0xFF).toString(16).padStart(2, '0').toUpperCase() + ' ' + (numVal & 0xFF).toString(16).padStart(2, '0').toUpperCase();
+      var fullFrame = rawFrame + ' ' + calcCrc16Hex(rawFrame);
+
+      rowsHtml += '<tr>' +
+        '<td><b>' + it.name + '</b> ' + (it.highRisk ? '<span class="tag danger">高危</span>' : '') + '</td>' +
+        '<td class="mono">' + it.reg + ' · ' + it.fc + '</td>' +
+        '<td class="mono" style="color:var(--ink-3)">' + it.tplVal + '</td>' +
+        '<td>' + (r.hasRead ? '<span class="val-pill">' + it.curVal + '</span> <span class="mono" style="font-size:11px;color:var(--ink-3)">' + it.curHex + '</span>' : '<span class="val-pill wait">未读取现值</span>') + '</td>' +
+        '<td>' + ctrlHtml + '</td>' +
+        '<td class="mono" style="font-size:11.5px;color:var(--accent)">' + fullFrame + '</td>' +
+        '<td><button class="btn sm ' + (it.highRisk ? 'danger' : 'primary') + ' btn-rtu-write" data-idx="' + i + '" data-frame="' + fullFrame + '">写入设备</button></td>' +
+      '</tr>';
+    }
+
+    var v = r.lastVerify;
+    return '' +
+      /* 顶部目标站号与模板控制卡 */
+      '<div class="w-card">' +
+        '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">' +
+          '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:12.5px;color:var(--ink-2)">目标站号</span>' +
+              '<input class="ipt mono sm" id="iptRtuSlave" value="' + r.slaveId + '" style="width:68px;text-align:center;font-weight:700">' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:12.5px;color:var(--ink-2)">寄存器模板</span>' +
+              '<select class="ipt sm" id="selRtuTpl" style="width:270px">' +
+                '<option value="ref-3">ref-3 · CD194E-9S4 (站号/校验/波特率)</option>' +
+                '<option value="meter-4">meter-4 · 通用导轨表 4 项</option>' +
+                '<option value="inv-std">inv-std · 变频器通信参数表</option>' +
+              '</select>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="btn" id="btnRtuClearRead">重置为未读态 (对比原图2)</button>' +
+            '<button class="btn primary" id="btnRtuReadAll">读取设备现值 (按表逐条 FC03)</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      /* 寄存器对照与内联改写表 */
+      '<div class="w-card">' +
+        '<div class="w-card-hd">' +
+          '<div class="w-card-title">RTU 参数读取与改写对照表<span class="w-card-sub">' + (r.hasRead ? '最后读取 ' + r.lastReadTime + ' · 4/4 应答' : '尚未读取设备现值') + '</span></div>' +
+          '<span style="font-size:12px;color:var(--ink-3)">默认开启「写完自动 FC03 读回校验」</span>' +
+        '</div>' +
+        '<div class="w-card-bd tight">' +
+          '<table class="data-tbl">' +
+            '<thead>' +
+              '<tr>' +
+                '<th>参数名称</th>' +
+                '<th>寄存器 · 功能码</th>' +
+                '<th>模板默认值</th>' +
+                '<th>设备当前现值</th>' +
+                '<th>准备写入的目标值</th>' +
+                '<th>即将下发 HEX 报文 (含CRC)</th>' +
+                '<th>单条执行</th>' +
+              '</tr>' +
+            '</thead>' +
+            '<tbody>' + rowsHtml + '</tbody>' +
+          '</table>' +
+        '</div>' +
+        '<div class="w-card-ft">' +
+          '<span>告别原版每个参数一个大红框：所有模板默认值、设备读取现值与目标写入值同屏比对。</span>' +
+        '</div>' +
+      '</div>' +
+
+      /* 写入结果与读回校验反馈卡 (与小程序 Screen 08 同源) */
+      '<div class="w-card mark-ok">' +
+        '<div class="w-card-hd">' +
+          '<div class="w-card-title">最近一次写入校验 · 读回一致</div>' +
+          '<span class="tag ok">FC06 写入 + FC03 读回通过</span>' +
+        '</div>' +
+        '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">' +
+          '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12.5px">' +
+            '<div><span style="color:var(--ink-3)">目标项：</span><b>' + v.reg + '</b></div>' +
+            '<div><span style="color:var(--ink-3)">写入值：</span><span class="mono">' + v.writeVal + '</span></div>' +
+            '<div><span style="color:var(--ink-3)">读回值：</span><span class="mono" style="color:var(--rx);font-weight:600">' + v.readback + ' (一致)</span></div>' +
+            '<div><span style="color:var(--ink-3)">往返耗时：</span><span class="mono">' + v.costMs + ' ms</span></div>' +
+          '</div>' +
+          '<div class="frame-box" style="padding:5px 10px"><span>报文:</span> <b>' + v.frame + '</b></div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function bindRtuEvents() {
+    var iptSlave = document.getElementById('iptRtuSlave');
+    if (iptSlave) {
+      iptSlave.addEventListener('change', function () {
+        state.rtu.slaveId = Math.max(1, Math.min(247, parseInt(iptSlave.value, 10) || 1));
+        renderMainStage();
+      });
+    }
+    var ipts = document.querySelectorAll('.rtu-target-ipt');
+    for (var i = 0; i < ipts.length; i++) {
+      ipts[i].addEventListener('input', function (e) {
+        var idx = parseInt(e.currentTarget.getAttribute('data-idx'), 10);
+        state.rtu.items[idx].targetVal = e.currentTarget.value;
+        renderMainStage();
+      });
+    }
+    var btnClear = document.getElementById('btnRtuClearRead');
+    if (btnClear) {
+      btnClear.addEventListener('click', function () {
+        state.rtu.hasRead = false;
+        renderMainStage();
+      });
+    }
+    var btnReadAll = document.getElementById('btnRtuReadAll');
+    if (btnReadAll) {
+      btnReadAll.addEventListener('click', function () {
+        state.rtu.hasRead = true;
+        state.rtu.lastReadTime = nowTimeStr(false);
+        addPacket('TX', '01 03 01 00 00 04 45 F5', 'FC03 读取 RTU 参数表 (4项)');
+        addPacket('RX', '01 03 08 00 01 00 02 00 03 07 EA B8 19', 'CRC 通过 · 4/4 应答');
+        addOpLog('ok', '读取设备现值 (站号 #' + state.rtu.slaveId + ')', '按模板 ref-3 逐条读取成功');
+        triggerCommandBanner('正在按地址表 FC03 读取设备现值...', 'RTU 设备现值读取完成 (4/4 应答)', 'FC03 OK (58ms)', true);
+        renderMainStage();
+      });
+    }
+    var writeBtns = document.querySelectorAll('.btn-rtu-write');
+    for (var j = 0; j < writeBtns.length; j++) {
+      writeBtns[j].addEventListener('click', function (e) {
+        var idx = parseInt(e.currentTarget.getAttribute('data-idx'), 10);
+        var frame = e.currentTarget.getAttribute('data-frame');
+        var it = state.rtu.items[idx];
+        var labelVal = it.targetVal;
+        if (it.options) {
+          for (var k = 0; k < it.options.length; k++) {
+            if (it.options[k].v === it.targetVal) labelVal = it.options[k].l.split(' · ')[1];
+          }
+        }
+        it.curVal = labelVal;
+        var numVal = parseInt(it.targetVal, 10) || 0;
+        it.curHex = '0x' + numVal.toString(16).toUpperCase().padStart(4, '0');
+        state.rtu.hasRead = true;
+        state.rtu.lastVerify = {
+          ok: true,
+          reg: it.reg + ' (' + it.name + ')',
+          writeVal: labelVal + ' (' + it.curHex + ')',
+          readback: labelVal + ' (' + it.curHex + ')',
+          costMs: 54,
+          frame: frame
+        };
+        addPacket('TX', frame, 'FC06 写 ' + it.name + ' = ' + labelVal);
+        addPacket('RX', frame, 'FC06 写回执 + 读回校验一致');
+        addOpLog('ok', '写入 RTU 参数「' + it.name + '」= ' + labelVal, '读回校验一致 · ' + frame);
+        triggerCommandBanner('已下发高危写指令 ' + it.reg + '，等现场确认与读回...', '写入成功且读回校验一致 (' + it.name + ' = ' + labelVal + ')', 'FC06 OK (54ms)', true);
+        renderMainStage();
+      });
+    }
+  }
+
+  // -------------------- 视图 3：串口调试助手 (解决截图 3 痛点) --------------------
+  function buildSerialView() {
+    var s = state.serial;
+    var crcVal = s.mode === 'HEX' && s.crcOn ? calcCrc16Hex(s.payload) : '不追加';
+    var fullTx = s.payload.trim() + (s.mode === 'HEX' && s.crcOn && crcVal !== '—' ? ' ' + crcVal : '');
+
+    return '' +
+      /* 一体化帧发送器 (把原图分离的 6 个大框整合成紧凑专业发帧器) */
+      '<div class="w-card">' +
+        '<div class="w-card-hd">' +
+          '<div class="w-card-title">串口原始帧发送台<span class="w-card-sub">支持 HEX / ASCII 与自动 CRC16 追加</span></div>' +
+          '<div style="display:flex;gap:6px;align-items:center">' +
+            '<span style="font-size:11.5px;color:var(--ink-3)">常用报文预设：</span>' +
+            '<button class="btn sm ser-preset" data-hex="01 03 00 00 00 0A">读保持 10 项</button>' +
+            '<button class="btn sm ser-preset" data-hex="01 03 01 00 00 01">读从站地址</button>' +
+            '<button class="btn sm ser-preset" data-hex="01 06 00 07 00 33">写 40008=51</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:12px">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+              '<div class="seg" id="segSerMode">' +
+                '<button class="seg-i ' + (s.mode === 'HEX' ? 'on' : '') + '" data-m="HEX">HEX 十六进制</button>' +
+                '<button class="seg-i ' + (s.mode === 'ASCII' ? 'on' : '') + '" data-m="ASCII">ASCII 文本</button>' +
+              '</div>' +
+              '<button class="btn sm ' + (s.crcOn ? 'primary' : '') + '" id="btnToggleCrc">自动追加 CRC16: ' + (s.crcOn ? '开' : '关') + '</button>' +
+              '<button class="btn sm ' + (s.appendCr ? 'primary' : '') + '" id="btnToggleCr">+CR</button>' +
+              '<button class="btn sm ' + (s.appendLf ? 'primary' : '') + '" id="btnToggleLf">+LF</button>' +
+            '</div>' +
+
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:12px;color:var(--ink-2)">循环间隔</span>' +
+              '<input class="ipt sm mono" id="iptSerLoopMs" value="' + s.loopMs + '" style="width:78px;text-align:center">' +
+              '<span style="font-size:11.5px;color:var(--ink-3)">ms</span>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="f-item">' +
+            '<div class="f-label">' +
+              '<span>报文内容 (直接输入，无需点铅笔弹窗)</span>' +
+              '<span class="mono" style="color:var(--accent)">计算 CRC16 (低字节在前): <b>' + crcVal + '</b></span>' +
+            '</div>' +
+            '<input class="ipt mono" id="iptSerPayload" value="' + s.payload + '" placeholder="如 01 03 00 00 00 0A" style="height:42px;font-size:14.5px">' +
+          '</div>' +
+
+          '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
+            '<div class="frame-box" style="flex:1">' +
+              '<span>最终发送帧预览:</span>' +
+              '<b id="serFinalPreview">' + fullTx + '</b>' +
+            '</div>' +
+            '<div style="display:flex;gap:8px">' +
+              '<button class="btn primary lg" id="btnSerSendOnce">▲ 发送一帧 (高危)</button>' +
+              '<button class="btn ' + (s.looping ? 'danger' : '') + ' lg" id="btnSerToggleLoop">' + (s.looping ? '■ 停止循环 (' + s.loopMs + 'ms)' : '↻ 启动循环发送') + '</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      /* 下方内嵌大尺寸收发报文控制台 */
+      '<div class="w-card" style="flex:1;display:flex;flex-direction:column">' +
+        '<div class="w-card-hd">' +
+          '<div class="w-card-title">串口收发实时监控台<span class="w-card-sub">TX 赭红 / RX 墨绿 · 与模块板载 WS2812B 灯语一致</span></div>' +
+          '<span class="mono" style="font-size:12px;color:var(--ink-2)">当前串口: 19200 · 8E1</span>' +
+        '</div>' +
+        '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:8px">' +
+          state.packets.slice(0, 6).map(function (p) {
+            var cls = p.dir === 'TX' ? 'tx' : 'rx';
+            return '<div class="pkt-line ' + cls + '" style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+              '<div><span class="pkt-dir">' + p.dir + '</span> <span style="opacity:.7">' + p.ts + ' (' + p.len + 'B)</span> · <b>' + p.hex + '</b></div>' +
+              '<span style="font-size:11px;color:var(--ink-2)">' + p.note + '</span>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+  }
+
+  function bindSerialEvents() {
+    var presets = document.querySelectorAll('.ser-preset');
+    for (var i = 0; i < presets.length; i++) {
+      presets[i].addEventListener('click', function (e) {
+        state.serial.payload = e.currentTarget.getAttribute('data-hex');
+        renderMainStage();
+      });
+    }
+    var segs = document.querySelectorAll('#segSerMode .seg-i');
+    for (var j = 0; j < segs.length; j++) {
+      segs[j].addEventListener('click', function (e) {
+        state.serial.mode = e.currentTarget.getAttribute('data-m');
+        renderMainStage();
+      });
+    }
+    document.getElementById('btnToggleCrc').addEventListener('click', function () {
+      state.serial.crcOn = !state.serial.crcOn;
+      renderMainStage();
+    });
+    document.getElementById('btnToggleCr').addEventListener('click', function () {
+      state.serial.appendCr = !state.serial.appendCr;
+      renderMainStage();
+    });
+    document.getElementById('btnToggleLf').addEventListener('click', function () {
+      state.serial.appendLf = !state.serial.appendLf;
+      renderMainStage();
+    });
+    var iptPayload = document.getElementById('iptSerPayload');
+    iptPayload.addEventListener('input', function () {
+      state.serial.payload = iptPayload.value;
+      var crc = state.serial.mode === 'HEX' && state.serial.crcOn ? calcCrc16Hex(state.serial.payload) : '';
+      document.getElementById('serFinalPreview').textContent = state.serial.payload.trim() + (crc && crc !== '—' ? ' ' + crc : '');
+    });
+    var iptLoop = document.getElementById('iptSerLoopMs');
+    iptLoop.addEventListener('change', function () {
+      state.serial.loopMs = Math.max(100, parseInt(iptLoop.value, 10) || 1000);
+      renderMainStage();
+    });
+
+    function sendSerialFrame() {
+      var s = state.serial;
+      var crc = s.mode === 'HEX' && s.crcOn ? calcCrc16Hex(s.payload) : '';
+      var frame = s.payload.trim() + (crc && crc !== '—' ? ' ' + crc : '');
+      addPacket('TX', frame, '串口直发 (' + s.mode + ')');
+      addOpLog('ok', '串口发送一帧: ' + frame, '已透传至现场 485 总线');
+      triggerCommandBanner('已下发串口直发帧，等现场回包...', '串口帧已发送并收到从站应答', 'RAW RX OK (48ms)', true);
+      setTimeout(function () {
+        addPacket('RX', '01 03 04 00 DC 00 DD 3A 9C', '从站应答 · CRC 校验通过');
+        renderMainStage();
+      }, 280);
+    }
+
+    document.getElementById('btnSerSendOnce').addEventListener('click', sendSerialFrame);
+    document.getElementById('btnSerToggleLoop').addEventListener('click', function () {
+      state.serial.looping = !state.serial.looping;
+      if ( serialLoopTimer ) { clearInterval(serialLoopTimer); serialLoopTimer = null; }
+      if (state.serial.looping) {
+        sendSerialFrame();
+        serialLoopTimer = setInterval(sendSerialFrame, state.serial.loopMs);
+      }
+      renderMainStage();
+    });
+  }
+
+  // -------------------- 视图 4：Modscan 四区表格 (解决截图 4 痛点) --------------------
+  function buildModscanView() {
+    var ms = state.modscan;
+    var rowsHtml = '';
+    for (var i = 0; i < ms.rows.length; i++) {
+      var r = ms.rows[i];
+      rowsHtml += '<tr>' +
+        '<td class="mono"><b>' + r.addr + '</b></td>' +
+        '<td class="mono" style="color:var(--ink-3)">' + r.hexAddr + '</td>' +
+        '<td><span class="val-pill ' + (r.changed ? 'chg' : '') + '">' + r.val + (r.changed ? ' ↑' : '') + '</span></td>' +
+        '<td class="mono" style="color:var(--accent)">' + r.hex + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--ink-3)">' + r.ts + '</td>' +
+        '<td><button class="btn sm btn-ms-write" data-idx="' + i + '">写值 ›</button></td>' +
+      '</tr>';
+    }
+
+    return '' +
+      /* 顶部四区切换 + 轮询统计条（sticky：停止按钮永远在视野内） */
+      '<div class="w-card ms-toolbar">' +
+        '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">' +
+          '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+            '<div class="seg" id="segMsArea">' +
+              '<button class="seg-i ' + (ms.area === '4x' ? 'on' : '') + '" data-a="4x">03 保持寄存器 (4x)</button>' +
+              '<button class="seg-i ' + (ms.area === '3x' ? 'on' : '') + '" data-a="3x">04 输入寄存器 (3x)</button>' +
+              '<button class="seg-i ' + (ms.area === '1x' ? 'on' : '') + '" data-a="1x">02 离散输入 (1x)</button>' +
+              '<button class="seg-i ' + (ms.area === '0x' ? 'on' : '') + '" data-a="0x">01 线圈状态 (0x)</button>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:14px">' +
+            '<span class="mono" style="font-size:12px;color:var(--ink-2)">' +
+              '第 <b>' + ms.round + '</b> 轮 · ' +
+              '<span style="color:var(--rx)">成功 ' + ms.okCount + '</span> · ' +
+              '<span style="color:var(--warn)">超时 ' + ms.timeoutCount + '</span> · ' +
+              '<span style="color:var(--danger)">错误 ' + ms.errCount + '</span>' +
+            '</span>' +
+            '<button class="btn sm" id="btnMsSingleRead">单次读取</button>' +
+            '<button class="btn ' + (ms.polling ? 'danger' : 'primary') + '" id="btnMsTogglePoll">' +
+              (ms.polling ? '■ 停止轮询 (' + ms.interval + 'ms)' : '▶ 启动连续扫描') +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      /* 主体：左侧紧凑参数栏 (260px) + 右侧实时寄存器数据表 */
+      '<div style="display:grid;grid-template-columns:260px minmax(0, 1fr);gap:14px;align-items:start">' +
+        '<div class="w-card">' +
+          '<div class="w-card-hd"><div class="w-card-title">扫描参数</div><span class="w-card-sub">FC03</span></div>' +
+          '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:10px">' +
+            '<div class="f-item"><div class="f-label"><span>从站站号 (1~247)</span></div><input class="ipt sm mono" id="msSlave" value="' + ms.slaveId + '"></div>' +
+            '<div class="f-item"><div class="f-label"><span>起始地址</span><span class="mono" style="color:var(--accent)">0x0000</span></div><input class="ipt sm mono" id="msStart" value="' + ms.startAddr + '"></div>' +
+            '<div class="f-item"><div class="f-label"><span>读取数量 (1~125)</span></div><input class="ipt sm mono" id="msCount" value="' + ms.count + '"></div>' +
+            '<div class="f-item"><div class="f-label"><span>扫描间隔 (ms)</span></div><input class="ipt sm mono" id="msInterval" value="' + ms.interval + '"></div>' +
+            '<div class="f-item"><div class="f-label"><span>数据显示格式</span></div>' +
+              '<select class="ipt sm" id="msFormat">' +
+                '<option value="Unsigned">Unsigned (16位无符号)</option>' +
+                '<option value="Signed">Signed (16位有符号)</option>' +
+                '<option value="Hex">Hex (十六进制)</option>' +
+                '<option value="Float32">Float32 (双字浮点)</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="f-item"><div class="f-label"><span>字节序</span></div>' +
+              '<div class="seg"><button class="seg-i on">MSB 高位在前</button><button class="seg-i">LSB</button></div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        /* 右侧：原截图4缺失的实时寄存器表 */
+        '<div class="w-card">' +
+          '<div class="w-card-hd">' +
+            '<div class="w-card-title">实时寄存器数据表<span class="w-card-sub">40001 ~ 40010 · 点击「写值」可弹窗下发 FC06</span></div>' +
+            '<span class="tag tx">变值行赭红高亮</span>' +
+          '</div>' +
+          '<div class="w-card-bd tight">' +
+            '<table class="data-tbl">' +
+              '<thead>' +
+                '<tr>' +
+                  '<th>寄存器地址</th>' +
+                  '<th>HEX 偏移</th>' +
+                  '<th>当前数值 (' + ms.format + ')</th>' +
+                  '<th>HEX 原始值</th>' +
+                  '<th>刷新时间</th>' +
+                  '<th>远程改写</th>' +
+                '</tr>' +
+              '</thead>' +
+              '<tbody>' + rowsHtml + '</tbody>' +
+            '</table>' +
+          '</div>' +
+          '<div class="w-card-ft">' +
+            '<span>写入前自动暂停轮询，FC06 写完并读回校验通过后自动恢复扫描。</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function stepModscanPoll() {
+    var ms = state.modscan;
+    ms.round += 1;
+    ms.okCount += 1;
+    var ts = nowTimeStr(false);
+    for (var i = 0; i < ms.rows.length; i++) {
+      ms.rows[i].changed = false;
+      ms.rows[i].ts = ts;
+    }
+    var pick = Math.floor(Math.random() * 5);
+    var delta = (Math.random() > 0.5 ? 1 : -1) * Math.floor(Math.random() * 4 + 1);
+    ms.rows[pick].val = Math.max(0, ms.rows[pick].val + delta);
+    ms.rows[pick].hex = '0x' + ms.rows[pick].val.toString(16).toUpperCase().padStart(4, '0');
+    ms.rows[pick].changed = true;
+    addPacket('TX', '01 03 00 00 00 0A C5 CD', 'Modscan 第 ' + ms.round + ' 轮');
+    addPacket('RX', '01 03 14 08 99 08 A6 08 96 02 08 0D 5C 03 D9 13 86 00 33 00 00 00 01 7E 4B', '10 个寄存器刷新');
+    if (state.activeTab === 'modscan') renderMainStage();
+  }
+
+  function bindModscanEvents() {
+    var areaBtns = document.querySelectorAll('#segMsArea .seg-i');
+    for (var i = 0; i < areaBtns.length; i++) {
+      areaBtns[i].addEventListener('click', function (e) {
+        state.modscan.area = e.currentTarget.getAttribute('data-a');
+        renderMainStage();
+      });
+    }
+    document.getElementById('btnMsSingleRead').addEventListener('click', function () {
+      stepModscanPoll();
+      addOpLog('ok', 'Modscan 单次读取 (40001×10)', '10 个保持寄存器已刷新');
+      triggerCommandBanner('已下发 FC03 批量读指令...', 'Modscan 数据表已更新', 'FC03 OK (60ms)', true);
+    });
+    document.getElementById('btnMsTogglePoll').addEventListener('click', function () {
+      state.modscan.polling = !state.modscan.polling;
+      if (modscanTimer) { clearInterval(modscanTimer); modscanTimer = null; }
+      if (state.modscan.polling) {
+        state.busyText = '轮询中 Polling';
+        stepModscanPoll();
+        modscanTimer = setInterval(stepModscanPoll, 1800);
+        addOpLog('info', '启动 Modscan 连续扫描', '站号 #1 · 40001×10 · 间隔 ' + state.modscan.interval + 'ms');
+      } else {
+        state.busyText = '空闲 Idle';
+        addOpLog('info', '停止 Modscan 扫描', '共完成 ' + state.modscan.round + ' 轮');
+      }
+      renderHeaderAndStatus();
+      renderMainStage();
+    });
+
+    var writeBtns = document.querySelectorAll('.btn-ms-write');
+    for (var j = 0; j < writeBtns.length; j++) {
+      writeBtns[j].addEventListener('click', function (e) {
+        editingRowIdx = parseInt(e.currentTarget.getAttribute('data-idx'), 10);
+        var r = state.modscan.rows[editingRowIdx];
+        document.getElementById('wmTitle').textContent = '写入保持寄存器 ' + r.addr;
+        document.getElementById('wmSub').textContent = '从站 #' + state.modscan.slaveId + ' · 偏移 ' + r.hexAddr + ' · 当前值 ' + r.val + ' (' + r.hex + ')';
+        document.getElementById('wmInput').value = r.val;
+        updateWriteModalFrame();
+        document.getElementById('writeModal').classList.add('show');
+      });
+    }
+  }
+
+  function updateWriteModalFrame() {
+    if (editingRowIdx === null) return;
+    var r = state.modscan.rows[editingRowIdx];
+    var rawVal = document.getElementById('wmInput').value.trim();
+    var num = rawVal.indexOf('0x') === 0 ? parseInt(rawVal, 16) : parseInt(rawVal, 10);
+    if (isNaN(num) || num < 0) num = 0;
+    num = num & 0xFFFF;
+    var offset = r.addr - 40001;
+    var body = String(state.modscan.slaveId).padStart(2, '0') + ' 06 ' +
+      ((offset >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0') + ' ' +
+      (offset & 0xFF).toString(16).toUpperCase().padStart(2, '0') + ' ' +
+      ((num >> 8) & 0xFF).toString(16).toUpperCase().padStart(2, '0') + ' ' +
+      (num & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+    document.getElementById('wmFramePreview').textContent = body + ' ' + calcCrc16Hex(body);
+  }
+
+  // -------------------- 视图 5：从站扫描 --------------------
+  function buildScanView() {
+    var sc = state.scan;
+    var pct = Math.round((sc.currentId / sc.endId) * 100);
+    return '' +
+      '<div class="w-card">' +
+        '<div class="w-card-hd"><div class="w-card-title">从站地址扫描范围 (1 ~ 247)</div><span class="tag info">FC03 逐站探测</span></div>' +
+        '<div class="w-card-bd" style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px">' +
+          '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+            '<div class="f-item" style="width:110px"><div class="f-label">起始站号</div><input class="ipt sm mono" value="' + sc.startId + '"></div>' +
+            '<div class="f-item" style="width:110px"><div class="f-label">结束站号</div><input class="ipt sm mono" value="' + sc.endId + '"></div>' +
+            '<div class="f-item" style="width:140px"><div class="f-label">探测寄存器</div><input class="ipt sm mono" value="' + sc.probeReg + '"></div>' +
+            '<div class="f-item" style="width:120px"><div class="f-label">单站超时 (ms)</div><input class="ipt sm mono" value="' + sc.timeoutMs + '"></div>' +
+          '</div>' +
+          '<button class="btn primary" id="btnScanTrigger">重新探测在线从站</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="w-card">' +
+        '<div class="w-card-hd"><div class="w-card-title">扫描进度 · 已探测 ' + sc.currentId + ' / ' + sc.endId + ' (' + pct + '%)</div><span class="tag ok">发现 ' + sc.hits.length + ' 台在线从站</span></div>' +
+        '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:14px">' +
+          '<div style="height:8px;background:var(--win-ipt);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:var(--rx)"></div></div>' +
+          '<table class="data-tbl">' +
+            '<thead><tr><th>在线从站地址</th><th>响应串口参数</th><th>探测寄存器返回值</th><th>往返耗时</th><th>快捷跳转</th></tr></thead>' +
+            '<tbody>' +
+              sc.hits.map(function (h) {
+                return '<tr>' +
+                  '<td><span class="val-pill">#' + h.id + '</span></td>' +
+                  '<td class="mono">' + h.baud + '</td>' +
+                  '<td class="mono">' + h.regVal + '</td>' +
+                  '<td class="mono">' + h.rtt + '</td>' +
+                  '<td>' +
+                    '<button class="btn sm scan-jump-rtu" data-id="' + h.id + '">去配 RTU ›</button> ' +
+                    '<button class="btn sm scan-jump-ms" data-id="' + h.id + '">去 Modscan ›</button>' +
+                  '</td>' +
+                '</tr>';
+              }).join('') +
+            '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function bindScanEvents() {
+    var btnScan = document.getElementById('btnScanTrigger');
+    if (btnScan) {
+      btnScan.addEventListener('click', function () {
+        state.scan.currentId = Math.min(247, state.scan.currentId + 25);
+        addPacket('TX', '11 03 00 64 00 01 C6 97', '探测从站 #17');
+        addPacket('RX', '11 03 02 00 01 39 87', '从站 #17 在线应答');
+        addOpLog('ok', '从站扫描进度推进至 ' + state.scan.currentId + '/247', '在线从站: #1, #2, #17');
+        renderMainStage();
+      });
+    }
+    var rtuJumps = document.querySelectorAll('.scan-jump-rtu');
+    for (var i = 0; i < rtuJumps.length; i++) {
+      rtuJumps[i].addEventListener('click', function (e) {
+        state.rtu.slaveId = parseInt(e.currentTarget.getAttribute('data-id'), 10);
+        switchToTab('rtu');
+      });
+    }
+    var msJumps = document.querySelectorAll('.scan-jump-ms');
+    for (var j = 0; j < msJumps.length; j++) {
+      msJumps[j].addEventListener('click', function (e) {
+        state.modscan.slaveId = parseInt(e.currentTarget.getAttribute('data-id'), 10);
+        switchToTab('modscan');
+      });
+    }
+  }
+
+  // -------------------- 视图 6：工具总览 --------------------
+  function buildToolsOverview() {
+    var cards = [
+      { key: 'scan', title: '从站扫描 (1~247)', desc: '逐地址发送 FC03 探测在线表计，自动汇总在线站号列表', stat: '已发现 3 台 (#1, #2, #17)' },
+      { key: 'modscan', title: 'Modscan 四区表格', desc: '01/02/03/04 四大寄存器区连续轮询、变值高亮与点击直写', stat: '正在监控 40001~40010' },
+      { key: 'serial', title: '串口调试助手', desc: 'HEX / ASCII 原始帧收发，实时计算并追加 Modbus CRC16', stat: 'TX ' + state.txBytes + 'B / RX ' + state.rxBytes + 'B' },
+      { key: 'rtu', title: '快速设置 RTU 参数', desc: '按寄存器模板一键读取设备现值，改站号/波特率并自动读回校验', stat: '当前模板: ref-3' },
+      { key: 'module', title: '蓝牙模块设置', desc: '查看并写入模块 485 侧波特率/数据位/校验位/停止位（广播名远程不可改，不提供 UI）', stat: '当前: 19200 8E1' }
+    ];
+    return '' +
+      '<div class="w-card mark-ok">' +
+        '<div class="w-card-hd"><div class="w-card-title">现场蓝牙模块链路总览 · SYCC485 (' + state.module.currentBleName + ')</div><span class="tag ok">远程会话 URFBBR3 已建立</span></div>' +
+        '<div class="w-card-bd" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">' +
+          '<div style="padding:10px;border-radius:8px;background:var(--win-panel)"><div style="font-size:11px;color:var(--ink-3)">蓝牙 RSSI 信号</div><div class="mono" style="font-size:18px;font-weight:700;color:var(--rx)">-62 dBm</div></div>' +
+          '<div style="padding:10px;border-radius:8px;background:var(--win-panel)"><div style="font-size:11px;color:var(--ink-3)">485 侧串口参数</div><div class="mono" style="font-size:18px;font-weight:700">19200 · 8E1</div></div>' +
+          '<div style="padding:10px;border-radius:8px;background:var(--win-panel)"><div style="font-size:11px;color:var(--ink-3)">当前目标从站</div><div class="mono" style="font-size:18px;font-weight:700">#1</div></div>' +
+          '<div style="padding:10px;border-radius:8px;background:var(--win-panel)"><div style="font-size:11px;color:var(--ink-3)">远程权限等级</div><div style="font-size:15px;font-weight:600;margin-top:2px">标准 (高危需确认)</div></div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:12px">' +
+        cards.map(function (c) {
+          return '<div class="w-card" style="cursor:pointer" data-goto-card="' + c.key + '">' +
+            '<div class="w-card-hd"><div class="w-card-title">' + c.title + '</div><span style="color:var(--accent);font-size:12px">打开并同步现场 ›</span></div>' +
+            '<div class="w-card-bd"><div style="font-size:12.5px;color:var(--ink-2);line-height:1.6">' + c.desc + '</div></div>' +
+            '<div class="w-card-ft"><span class="mono">' + c.stat + '</span></div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+  }
+
+  function bindToolsOverviewEvents() {
+    var cards = document.querySelectorAll('[data-goto-card]');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].addEventListener('click', function (e) {
+        switchToTab(e.currentTarget.getAttribute('data-goto-card'));
+      });
+    }
+  }
+
+  // ==================== 全局切页与顶栏事件 ====================
+  window.switchToTab = function (tabKey) {
+    state.activeTab = tabKey;
+    var tabNames = { tools: '工具', scan: '扫描', modscan: 'Modscan', serial: '串口', rtu: 'RTU', module: '模块' };
+    addOpLog('ok', '已通知现场打开「' + (tabNames[tabKey] || tabKey) + '」', '桌面端与现场小程序页面同步');
+    renderHeaderAndStatus();
+    renderMainStage();
+  };
+
+  var navBtns = document.querySelectorAll('#mainNavTabs .nav-tab');
+  for (var i = 0; i < navBtns.length; i++) {
+    navBtns[i].addEventListener('click', function (e) {
+      window.switchToTab(e.currentTarget.getAttribute('data-tab'));
+    });
+  }
+
+  var simGotoBtns = document.querySelectorAll('.sim-pill[data-goto]');
+  for (var j = 0; j < simGotoBtns.length; j++) {
+    simGotoBtns[j].addEventListener('click', function (e) {
+      window.switchToTab(e.currentTarget.getAttribute('data-goto'));
+      document.getElementById('desktopApp').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  // 主题切换
+  document.getElementById('btnToggleTheme').addEventListener('click', function (e) {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    document.body.setAttribute('data-theme', state.theme);
+    e.currentTarget.textContent = state.theme === 'dark' ? '主题：深色工业台 (Dark)' : '主题：浅色小程序同源 (Light)';
+  });
+
+  // 现场离线状态切换
+  document.getElementById('btnToggleOffline').addEventListener('click', function () {
+    state.fieldOnline = !state.fieldOnline;
+    if (!state.fieldOnline) {
+      addOpLog('warn', '现场没响应', '现场可能断网 / 锁屏 / 小程序被切到后台，已置顶显示唤醒横幅');
+      state.resultText = '应答超时 Timeout';
+      state.resultOk = false;
+    } else {
+      addOpLog('ok', '现场心跳已恢复', '信号 -62 dBm · 串口 19200 8E1');
+      state.resultText = 'FC03 OK (62ms)';
+      state.resultOk = true;
+    }
+    renderHeaderAndStatus();
+  });
+
+  document.getElementById('btnPingField').addEventListener('click', function () {
+    state.fieldOnline = true;
+    addOpLog('ok', '发送唤醒 Ping 成功 · 现场已恢复在线', '耗时 42ms');
+    triggerCommandBanner('正在发送 MQTT 高优唤醒 Ping...', '现场小程序已响应唤醒并恢复在线', 'PING OK (42ms)', true);
+  });
+  document.getElementById('btnDismissOffline').addEventListener('click', function () {
+    state.fieldOnline = true;
+    renderHeaderAndStatus();
+  });
+
+  // 模拟收到一帧 RX
+  document.getElementById('btnSimRx').addEventListener('click', function () {
+    stepModscanPoll();
+    triggerCommandBanner('收到现场 485 总线主动上报帧...', '已解析 RX 报文并更新寄存器表', 'RX 25B OK', true);
+  });
+
+  // 右栏分屏切换
+  var dockModeBtns = document.querySelectorAll('#dockModeSeg .seg-i');
+  for (var d = 0; d < dockModeBtns.length; d++) {
+    dockModeBtns[d].addEventListener('click', function (e) {
+      state.dockMode = e.currentTarget.getAttribute('data-dmode');
+      var modeLabels = { split: '报文流: 分屏同显', pkt: '报文流: 全屏', ops: '操作记录: 全屏' };
+      document.getElementById('btnToggleDockMode').textContent = modeLabels[state.dockMode];
+      renderTelemetryDock();
+    });
+  }
+  document.getElementById('btnToggleDockMode').addEventListener('click', function () {
+    var order = ['split', 'pkt', 'ops'];
+    state.dockMode = order[(order.indexOf(state.dockMode) + 1) % order.length];
+    var modeLabels = { split: '报文流: 分屏同显', pkt: '报文流: 全屏', ops: '操作记录: 全屏' };
+    document.getElementById('btnToggleDockMode').textContent = modeLabels[state.dockMode];
+    renderTelemetryDock();
+  });
+
+  document.getElementById('btnClearLogs').addEventListener('click', function () {
+    if (state.dockMode === 'pkt') state.packets = [];
+    else if (state.dockMode === 'ops') state.ops = [];
+    else { state.packets = []; state.ops = []; }
+    renderTelemetryDock();
+  });
+
+  document.getElementById('btnResync').addEventListener('click', function () {
+    addOpLog('info', '已重新同步', '现场状态与桌面端已对齐');
+    triggerCommandBanner('正在请求现场全量状态同步...', '现场状态同步完成', 'SYNC OK (38ms)', true);
+  });
+
+  document.getElementById('btnNotifyFieldPage').addEventListener('click', function () {
+    window.switchToTab(state.activeTab);
+  });
+
+  document.getElementById('btnFieldBack').addEventListener('click', function () {
+    window.switchToTab('tools');
+  });
+
+  document.getElementById('btnSessionToggle').addEventListener('click', function (e) {
+    state.sessionConnected = !state.sessionConnected;
+    e.currentTarget.textContent = state.sessionConnected ? '断开' : '接入';
+    addOpLog('info', state.sessionConnected ? '已重新接入会话: ' + state.sessionCode : '已主动断开远程会话', '');
+  });
+
+  document.getElementById('btnEndSession').addEventListener('click', function () {
+    state.sessionConnected = false;
+    document.getElementById('btnSessionToggle').textContent = '接入';
+    addOpLog('warn', '已结束本次远程协助会话', '会话码 ' + state.sessionCode + ' 已释放');
+    triggerCommandBanner('正在通知云端释放协助会话...', '远程协助已结束', 'SESSION CLOSED', true);
+  });
+
+  // 点击报文行复制 HEX
+  document.getElementById('packetList').addEventListener('click', function (e) {
+    var line = e.target.closest('[data-copyhex]');
+    if (!line) return;
+    var hex = line.getAttribute('data-copyhex');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(hex);
+    } catch (err) {}
+    state.cmdText = '已复制报文 HEX 到剪贴板: ' + hex;
+    renderHeaderAndStatus();
+  });
+
+  // Modscan 写寄存器弹窗事件
+  document.getElementById('wmInput').addEventListener('input', updateWriteModalFrame);
+  var quickBtns = document.querySelectorAll('.wm-quick');
+  for (var q = 0; q < quickBtns.length; q++) {
+    quickBtns[q].addEventListener('click', function (e) {
+      document.getElementById('wmInput').value = e.currentTarget.getAttribute('data-v');
+      updateWriteModalFrame();
+    });
+  }
+  function closeWriteModal() {
+    document.getElementById('writeModal').classList.remove('show');
+    editingRowIdx = null;
+  }
+  document.getElementById('wmClose').addEventListener('click', closeWriteModal);
+  document.getElementById('wmCancel').addEventListener('click', closeWriteModal);
+  document.getElementById('wmConfirm').addEventListener('click', function () {
+    if (editingRowIdx === null) return;
+    var r = state.modscan.rows[editingRowIdx];
+    var rawVal = document.getElementById('wmInput').value.trim();
+    var num = rawVal.indexOf('0x') === 0 ? parseInt(rawVal, 16) : parseInt(rawVal, 10);
+    if (isNaN(num) || num < 0) num = 0;
+    num = num & 0xFFFF;
+    r.val = num;
+    r.hex = '0x' + num.toString(16).toUpperCase().padStart(4, '0');
+    r.changed = true;
+    r.ts = nowTimeStr(false);
+    var frame = document.getElementById('wmFramePreview').textContent;
+    addPacket('TX', frame, 'FC06 写寄存器 ' + r.addr + ' = ' + num);
+    addPacket('RX', frame, 'FC06 写回执 + 读回校验通过');
+    addOpLog('ok', 'Modscan 写入 ' + r.addr + ' = ' + num, '报文: ' + frame);
+    closeWriteModal();
+    triggerCommandBanner('已下发 FC06 写寄存器 ' + r.addr + '...', '写入成功并读回一致 (' + r.addr + ' = ' + num + ')', 'FC06 OK (55ms)', true);
+    renderMainStage();
+  });
+
+  // 初始渲染
+  renderHeaderAndStatus();
+  renderTelemetryDock();
+  renderMainStage();
+})();
+</script>
+</body>
+</html>

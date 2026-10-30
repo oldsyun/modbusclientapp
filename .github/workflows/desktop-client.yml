@@ -1,0 +1,247 @@
+# ============================================================================
+#  Modbus 远程调试台 · 多平台编译
+# ----------------------------------------------------------------------------
+#  产物：
+#    · Linux（Debian 系）  ：.deb / .AppImage / .rpm
+#    · Windows x64          ：.msi / .exe(NSIS)
+#    · Windows x86（32 位） ：.exe(NSIS)        ← 实验性，见下方说明
+#    · macOS（Universal）   ：.dmg / .app       ← arm64 + x86_64 合一的通用二进制
+#
+#  触发：
+#    · push 到 main/master（仅本仓库源码或本文件变更时）
+#    · 打 tag desktop-v*（额外创建 GitHub Release，把全部产物挂上去）
+#    · 手动 workflow_dispatch
+#
+#  说明：
+#    · Linux 固定 ubuntu-22.04（glibc 2.35），deb 可覆盖 Debian 12 / Ubuntu 22.04+；
+#    · macOS 用 --target universal-apple-darwin，一次构建同时满足 Intel / Apple Silicon；
+#    · Windows 32 位（i686）依赖 32 位 WebView2 运行时，设了 continue-on-error：
+#      失败不会拖红整条流水线，但该 job 仍会显示为失败；不需要 32 位时删掉该矩阵项即可。
+# ============================================================================
+name: Desktop Client · 多平台编译
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['desktop-v*']
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.js'
+      - '.github/workflows/desktop-client.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.js'
+      - '.github/workflows/desktop-client.yml'
+  workflow_dispatch:
+
+# 打 tag 时用 GITHUB_TOKEN 建 Release
+permissions:
+  contents: write
+
+# 同一分支/标签只跑一条，新推送取消旧任务
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 0) 先跑协议层单测，挂了就不浪费多平台编译时间
+  # --------------------------------------------------------------------------
+  test:
+    name: 单测（协议 + 网关 e2e）
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 单测 + 网关 e2e
+        run: |
+          npm ci
+          npm test
+
+  # --------------------------------------------------------------------------
+  # 1) 多平台打包
+  # --------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---- Linux / Debian 系：deb + AppImage + rpm ----
+          - name: linux-x64
+            os: ubuntu-22.04
+            rust_targets: ''
+            build_args: ''
+
+          # ---- Windows 64 位：msi + NSIS exe ----
+          - name: windows-x64
+            os: windows-latest
+            rust_targets: ''
+            build_args: ''
+
+          # ---- Windows 32 位（i686）：只出 NSIS 安装包（实验性） ----
+          - name: windows-x86
+            os: windows-latest
+            rust_targets: i686-pc-windows-msvc
+            build_args: '--target i686-pc-windows-msvc --bundles nsis'
+            experimental: true
+
+          # ---- macOS Universal（arm64 + x86_64）：dmg + app ----
+          - name: macos-universal
+            os: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            build_args: '--target universal-apple-darwin'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.name }}
+
+      # Tauri v2 在 Linux 上需要的系统库（webkit2gtk-4.1 / AppIndicator / rsvg）
+      - name: 安装 Linux 依赖
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libfuse2 \
+            patchelf \
+            build-essential \
+            curl wget file
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # rust-cache 会把上一次的 bundle/ 一起还原，里面可能有旧 productName 的安装包（甚至空壳），
+      # 若不清理，下面的 find / upload-artifact 会抓到陈旧文件。先清掉再编译。
+      - name: 清理缓存里的旧安装包
+        shell: bash
+        run: |
+          rm -rf src-tauri/target/*/release/bundle src-tauri/target/release/bundle 2>/dev/null || true
+          echo "---- 清理后剩余 bundle ----"
+          find src-tauri/target -maxdepth 6 -path '*/release/bundle/*' -type f 2>/dev/null | sort || echo "(none)"
+
+      # broker 配置全部由 GitHub Secrets 注入构建期环境变量（vite build 阶段读 VITE_MQTT_*）
+      # 源码 / git 历史里不含真实地址、端口、账号、密码；没配 Secrets 就是空配置
+      - name: 编译 Tauri（${{ matrix.name }}）
+        shell: bash
+        env:
+          VITE_MQTT_HOST: ${{ secrets.MQTT_HOST }}
+          VITE_MQTT_PORT: ${{ secrets.MQTT_PORT }}
+          VITE_MQTT_PATH: ${{ secrets.MQTT_PATH }}
+          VITE_MQTT_SECURE: ${{ secrets.MQTT_SECURE }}
+          VITE_MQTT_USERNAME: ${{ secrets.MQTT_USERNAME }}
+          VITE_MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
+          VITE_MQTT_KEEPALIVE: ${{ secrets.MQTT_KEEPALIVE }}
+        run: |
+          # 只打印长度，不把值打进日志；tag 发布时缺配置直接失败，避免发出连不上 broker 的安装包
+          echo "broker env 长度: host=${#VITE_MQTT_HOST} port=${#VITE_MQTT_PORT} user=${#VITE_MQTT_USERNAME} pass=${#VITE_MQTT_PASSWORD}"
+          if [ -z "$VITE_MQTT_HOST" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::发布构建缺少 VITE_MQTT_HOST —— 检查 Settings → Secrets and variables → Actions"
+              exit 1
+            fi
+            echo "::warning::VITE_MQTT_HOST 为空，产物将没有内置 broker 配置（需在界面「设置」里填）"
+          fi
+          npx tauri build ${{ matrix.build_args }}
+          echo "---- bundles ----"
+          find src-tauri/target -maxdepth 6 -path '*/release/bundle/*' -type f | sort || true
+
+      # .app 是目录且带符号链接：先 ditto 成 zip，避免 artifact 解包后框架链接损坏
+      - name: 打包 macOS .app（保留符号链接）
+        if: matrix.name == 'macos-universal'
+        shell: bash
+        run: |
+          # 按修改时间取最新的 .app，避免命中残留的旧目录
+          APP=$(find src-tauri/target -maxdepth 6 -type d -path '*/release/bundle/macos/*.app' -print0 \
+                 | xargs -0 ls -td 2>/dev/null | head -1)
+          echo "app=$APP"
+          if [ -z "$APP" ]; then echo "::error::找不到 .app"; exit 1; fi
+          ZIP="${APP%.app}-app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          ls -lh "$ZIP"
+          # 空壳 zip 直接报错，避免又挂一个 0 字节资产上 Release
+          if [ "$(stat -f%z "$ZIP")" -lt 1048576 ]; then echo "::error::$ZIP 过小（可能是空壳）"; exit 1; fi
+
+      - name: 上传产物（${{ matrix.name }}）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/macos/*.zip
+            src-tauri/target/**/release/bundle/msi/*.msi
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/deb/*.deb
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+            src-tauri/target/**/release/bundle/rpm/*.rpm
+
+  # --------------------------------------------------------------------------
+  # 2) 打 tag（desktop-v*）时把全部产物挂到 Release；普通 push / PR 不跑
+  # --------------------------------------------------------------------------
+  release:
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 下载全部平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 创建 / 更新 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Modbus Remote Bench ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          # 直接发布（不是草稿）：产物立刻出现在 Releases 页，可被直接下载
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: artifacts/**/*
