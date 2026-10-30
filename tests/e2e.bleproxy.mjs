@@ -165,8 +165,11 @@ function bootHost(ble, sid) {
     setStorageSync() {},
     showToast() {},
     showModal() {},
-    reLaunch() {}
+    reLaunch() {},
+    navigateTo() {},
+    redirectTo() {}
   };
+  global.getCurrentPages = () => [{ route: 'pages/index/index' }];
   // Host 依赖的全局方法在 Node 里不存在，这里补齐后再 require
   const HostMod = require(path.join(ROOT, 'assist', 'host.js'));
   const host = new HostMod.Host();
@@ -231,6 +234,7 @@ function makeDesktop(hostBox, sid, state) {
       return;
     }
     if (pl.scan) state.scans.push({ scan: pl.scan, addr: pl.addr, found: pl.found, cur: pl.cur });
+    if (o.type === 'view' && pl.page) state.views.push(pl);
   };
   remote.onData = (o) => { (o.payload.lines || []).forEach((l) => state.logs.push(l)); };
   hostBox.attachRemote(remote);
@@ -244,7 +248,7 @@ async function run() {
   MI.note(ble, { name: 'SYCC485-A3D9', baud: 9600, dataBits: 8, parity: 'N', stopBits: 1 });
 
   const box = bootHost(ble, sid);
-  const state = { gw: null, scans: [], logs: [] };
+  const state = { gw: null, scans: [], logs: [], views: [] };
   const { remote } = makeDesktop(box, sid, state);
   const { host } = box;
 
@@ -322,7 +326,32 @@ async function run() {
   check('蓝牙断开回 409', linkErr && linkErr.code === 409, JSON.stringify(linkErr));
   ble.state = 'connected';
 
-  // 10) assist.kick：收掉现场会话
+  // 10) 页面双向同步：控制端切页 → host 导航；页面 patch → host 落地并广播
+  const nav = [];
+  // 让 host 的导航可观测（bootHost 里的 wx 是全局对象，这里补记录）
+  global.wx.navigateTo = (o) => nav.push(o.url);
+  global.wx.redirectTo = (o) => nav.push(o.url);
+  const fv = await remote.sendCmd('view.follow', { page: 'scan', data: { cur: 3 } }, { noRetry: true, timeout: 2000 });
+  check('view.follow 被 host 受理', fv && fv.page === 'scan', JSON.stringify(fv));
+  check('host 导航到扫描页', nav.some((u) => /debug\/scan/.test(u)), JSON.stringify(nav));
+
+  host.page = {
+    assistPageId: 'scan',
+    data: { running: false, scanned: false, cur: 3, total: 247, pct: 0, etaText: '', found: [], startAddr: '1', endAddr: '247', reg: '0', regMode: 'dec', timeout: '80', unsupported: false },
+    applyRemoteView(d) { this.applied = d; this.data.cur = d.cur; }
+  };
+  host.pageId = 'scan';
+  await remote.sendCmd('view.patch', { page: 'scan', data: { cur: 11 } }, { noRetry: true, timeout: 2000 });
+  await sleep(30);
+  check('view.patch 落到现场页', host.page.applied && host.page.applied.cur === 11, JSON.stringify(host.page.applied));
+  check('host 把页面状态广播回控制端', state.views.some((v) => v.page === 'scan' && v.data && v.data.cur === 11), JSON.stringify(state.views.slice(-1)));
+
+  // 现场本地改页面 → 控制端也应该收到
+  host.publishView('scan', { cur: 33, running: true, found: [7] }, 'phone');
+  await sleep(20);
+  check('现场本地页面状态回传控制端', state.views.some((v) => v.source === 'phone' && v.data.cur === 33), JSON.stringify(state.views.slice(-1)));
+
+  // 11) assist.kick：收掉现场会话
   await remote.sendCmd('assist.kick', {}, { noRetry: true, timeout: 2000 });
   check('assist.kick 后现场会话关闭', host.session === null && host.sid === '');
 

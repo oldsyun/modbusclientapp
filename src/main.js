@@ -64,6 +64,12 @@ const app = {
   result: { text: '—', ok: true },
   busyCount: 0,
 
+  // 页面级双向同步（见 desktopViewSnapshot / applyHostView）
+  viewApplying: false,
+  viewRev: 0,
+  viewTimer: null,
+  viewLast: null,
+
   scan: { running: false, cur: 0, found: 0, list: [], start: 1, end: 247, reg: 0, timeout: 80, done: false },
 
   modscan: {
@@ -195,6 +201,10 @@ function closeSession(silent) {
   app.pageId = '';
   app.widgets = [];
   app.busyCount = 0;
+  app.viewApplying = false;
+  app.viewRev = 0;
+  app.viewLast = null;
+  if (app.viewTimer) { clearTimeout(app.viewTimer); app.viewTimer = null; }
   lastGatewaySync = 0;
   app.scan = { running: false, cur: 0, found: 0, list: [], start: 1, end: 247, reg: 0, timeout: 80, done: false };
   app.modscan.rows = [];
@@ -273,7 +283,8 @@ function ensureGateway(pl) {
   app.gw.host = true;
 
   if (first) {
-    app.activeTab = 'tools';
+    // 如果网关角色之前已经先到过一帧 view（现场页），保留它切到的页，别被默认 tools 覆盖
+    if (!app.viewRev) app.activeTab = 'tools';
     setBusy(0);
     app.cmd = {
       text: gwLinkLabel() + ' 已上线 · 桌面端优先接管（小程序 remote 暂停）',
@@ -323,6 +334,8 @@ function onSyncErr(err) {
 function onStateMsg(o) {
   const pl = o.payload || {};
 
+  // 页面级双向同步：控制端/现场任一方的当前页 + 页面 data
+  if (o.type === 'view') { applyHostView(pl); return; }
   if (pl.role === 'gateway') { applyGatewayDetail(pl); return; }
   if (pl.scan) { onScanState(pl); return; }
 
@@ -437,6 +450,7 @@ function onScanState(pl) {
   }
   if (app.activeTab === 'scan') renderScanLive();
   renderStatusbar();
+  scheduleDesktopView();
 }
 
 /* ==================================================================
@@ -489,6 +503,289 @@ function gwReady() { return !!(app.gw && app.gw.on); }
 function gwLink() { return (app.gw && app.gw.link) || 'wifi'; }
 function gwLinkLabel() { return gwLink() === 'ble' ? '蓝牙小程序代理' : 'ESP32 WiFi 直连'; }
 function gwLinkShort() { return gwLink() === 'ble' ? '蓝牙代理' : '模块托管'; }
+
+/* ==================================================================
+   页面级双向同步（对应 miniprogram/utils/assist/view-sync.js）
+   ------------------------------------------------------------------
+   桌面端切页 → view.follow，现场手机跳到同一页；
+   桌面端/现场任一端页面 data 变化 → view.patch，另一端 setData/映射后显示。
+   ================================================================== */
+const VIEW_PAGE_OF_TAB = { tools: 'menu', scan: 'scan', modscan: 'modscan', serial: 'serial', rtu: 'rtu', module: 'uart' };
+const TAB_OF_VIEW_PAGE = { menu: 'tools', scan: 'scan', modscan: 'modscan', serial: 'serial', rtu: 'rtu', uart: 'module' };
+const MODSCAN_TAB_TO_AREA = { 0: '01', 1: '02', 2: '04', 3: '03' };
+const MODSCAN_AREA_TO_TAB = { '01': 0, '02': 1, '04': 2, '03': 3 };
+const PHONE_BAUDS = ['1200', '2400', '4800', '9600', '19200', '38400', '57600', '115200'];
+
+function viewPageOfTab(tab) { return VIEW_PAGE_OF_TAB[tab] || 'menu'; }
+
+// 切页/被远端切页时，别让上一页的轮询或循环发送在后台继续抢 485
+function stopTasksForTab(nextTab) {
+  if (nextTab !== 'modscan' && app.modscan.polling) stopPolling(true);
+  if (nextTab !== 'serial' && app.serial.looping) stopSerialLoop(true);
+}
+
+/** 控制端切页：让现场手机跟着打开同一页 */
+function sendViewFollow(tab) {
+  if (!app.joined || !gwReady() || gwLink() !== 'ble') return;
+  const page = viewPageOfTab(tab || app.activeTab);
+  const data = desktopViewSnapshot(page);
+  app.viewLast = page + '|' + JSON.stringify(data);
+  send('view.follow', { page, data }, { quiet: true, noRetry: true, timeout: 4000 }).catch(() => {});
+}
+
+function scheduleDesktopView() {
+  if (app.viewApplying) return;
+  clearTimeout(app.viewTimer);
+  app.viewTimer = setTimeout(() => {
+    app.viewTimer = null;
+    if (!app.joined || !gwReady() || gwLink() !== 'ble' || app.viewApplying) return;
+    const page = viewPageOfTab(app.activeTab);
+    const data = desktopViewSnapshot(page);
+    const key = page + '|' + JSON.stringify(data);
+    if (key === app.viewLast) return;
+    app.viewLast = key;
+    send('view.patch', { page, data }, { quiet: true, noRetry: true, timeout: 4000 }).catch(() => {});
+  }, 200);
+}
+
+/** 桌面端页面 → 现场页面同构 data 快照（字段与小程序页面一致） */
+function desktopViewSnapshot(page) {
+  if (page === 'scan') {
+    const s = app.scan;
+    const span = Math.max(1, s.end - s.start + 1);
+    const done = s.running ? clamp(s.cur - s.start + 1, 0, span) : (s.done ? span : 0);
+    return {
+      running: !!s.running, scanned: !!s.done, cur: num(s.cur, 0), total: span,
+      pct: Math.round(done / span * 100), etaText: '', found: (s.list || []).slice(),
+      startAddr: String(s.start), endAddr: String(s.end), reg: String(s.reg),
+      regMode: 'dec', timeout: String(s.timeout), unsupported: false
+    };
+  }
+  if (page === 'modscan') {
+    const ms = app.modscan;
+    const meta = AREA_META[ms.area] || AREA_META['03'];
+    return {
+      activeTab: MODSCAN_AREA_TO_TAB[ms.area] === undefined ? 3 : MODSCAN_AREA_TO_TAB[ms.area],
+      fcNow: meta.fc,
+      slaveId: num(ms.slave, 1), address: String(ms.start),
+      addrMode: /^0x/i.test(String(ms.start)) ? 'hex' : 'dec',
+      quantity: num(ms.count, 10), interval: num(ms.interval, 500),
+      byteOrder: 'MSB',
+      scanFormatIdx: { Binary: 0, Hex: 1, Unsigned: 2, Signed: 3, 'LongInt(32)': 4, 'Float(32)': 5, 'Double(64)': 6 }[ms.format] ?? 2,
+      scanFormatLabel: ms.format,
+      polling: !!ms.polling, scanCount: ms.round,
+      pollStats: ms.ok + '/' + ms.timeout + '/' + ms.err,
+      sOk: ms.ok, sTo: ms.timeout, sEr: ms.err, lastErr: null,
+      dataList: (ms.rows || []).map((r) => ({
+        addrLabel: r.addrLabel, addr: r.addr, value: r.val,
+        hex: '0x' + hex4(r.raw), rawVal: r.raw, changed: !!r.changed
+      }))
+    };
+  }
+  if (page === 'serial') {
+    const s = app.serial;
+    const logs = (app.packets || [])
+      .filter((p) => p.dir === 'TX' || p.dir === 'RX')
+      .slice(0, 40)
+      .reverse()
+      .map((p, i) => ({
+        id: i + 1,
+        dir: p.dir,
+        time: p.t || '',
+        hex: p.hex || '',
+        ascii: String(p.hex || '').replace(/[^0-9a-fA-F]/g, '').replace(/../g, (b) => {
+          const c = parseInt(b, 16);
+          return (c >= 32 && c <= 126) ? String.fromCharCode(c) : '.';
+        }),
+        len: p.len || 0,
+        note: p.note || ''
+      }));
+    return {
+      txMode: s.mode, txText: s.payload, appendCr: !!s.appendCr, appendLf: !!s.appendLf,
+      crcOn: !!s.crcOn, crcText: crcHexOf(s.payload),
+      loopOn: !!s.looping, loopInterval: String(s.loopMs),
+      txCount: s.txCount, rxCount: s.rxCount,
+      logMode: s.mode, autoScroll: true,
+      logs: logs.length ? logs : undefined
+    };
+  }
+  if (page === 'rtu') {
+    const r = app.rtu;
+    return {
+      targetSlave: r.slave, targetText: String(r.slave),
+      readAt: r.readAt, readTitle: '寄存器读取',
+      readOk: (r.rows || []).filter((it) => it.read).length,
+      readBad: (r.rows || []).filter((it) => it.err).length,
+      readDone: (r.rows || []).length,
+      readTotal: (r.rows || []).length,
+      readRows: (r.rows || []).filter((it) => it.read).map((it, i) => ({
+        idx: i, name: it.name, addrHex: '0x' + hex4(it.addr),
+        fcName: 'FC' + (it.fc === 16 ? '10' : '06'),
+        valueText: PRESET.labelOf(it, it.cur), rawHex: '0x' + hex4(it.cur),
+        bad: false, nowText: clock()
+      })),
+      busy: !!r.reading, busyLabel: r.reading ? '读取中' : ''
+    };
+  }
+  if (page === 'uart') {
+    const e = app.module.edit;
+    const bi = PHONE_BAUDS.indexOf(String(e.baud));
+    return {
+      baudIndex: bi < 0 ? 3 : bi, dataBits: e.dataBits, stopBits: e.stopBits,
+      parity: e.parity,
+      summary: e.baud + ' · ' + e.dataBits + e.parity + e.stopBits,
+      dirty: !!app.module.dirty,
+      busy: !!(app.module.reading || app.module.writing),
+      busyLabel: app.module.reading ? '读取中' : ''
+    };
+  }
+  return {};
+}
+
+/** 现场页面 → 桌面端视图（只覆盖能对应的字段） */
+function applyDesktopView(page, d) {
+  d = d || {};
+  if (page === 'scan') {
+    if (d.running !== undefined) app.scan.running = !!d.running;
+    if (d.scanned !== undefined) app.scan.done = !!d.scanned;
+    if (d.cur !== undefined) app.scan.cur = num(d.cur, app.scan.cur);
+    if (Array.isArray(d.found)) {
+      app.scan.list = d.found.filter((x) => typeof x === 'number');
+      app.scan.found = app.scan.list.length;
+    }
+    if (d.startAddr !== undefined) app.scan.start = clamp(num(d.startAddr, app.scan.start), 1, 247);
+    if (d.endAddr !== undefined) app.scan.end = clamp(num(d.endAddr, app.scan.end), app.scan.start, 247);
+    if (d.reg !== undefined) app.scan.reg = clamp(num(d.reg, app.scan.reg), 0, 65535);
+    if (d.timeout !== undefined) app.scan.timeout = clamp(num(d.timeout, app.scan.timeout), 20, 1000);
+    return;
+  }
+  if (page === 'modscan') {
+    const ms = app.modscan;
+    if (d.activeTab !== undefined) ms.area = MODSCAN_TAB_TO_AREA[num(d.activeTab, 3)] || '03';
+    if (d.slaveId !== undefined) ms.slave = clamp(num(d.slaveId, ms.slave), 1, 247);
+    if (d.address !== undefined) ms.start = String(d.address);
+    if (d.quantity !== undefined) ms.count = clamp(num(d.quantity, ms.count), 1, 120);
+    if (d.interval !== undefined) ms.interval = Math.max(200, num(d.interval, ms.interval));
+    if (d.scanFormatLabel) {
+      const f = String(d.scanFormatLabel);
+      ms.format = /Signed|LongInt|Float|Double/.test(f) ? 'Signed' : (/Hex|Binary/.test(f) ? 'Hex' : 'Unsigned');
+    }
+    // 对端在轮询时，桌面端只显示；但自己的定时器不能因为"自己的镜像回传 true"被误停
+    if (d.polling === false) {
+      stopPolling(true);
+      ms.polling = false;
+    } else if (d.polling === true) {
+      ms.polling = true;
+    }
+    if (d.scanCount !== undefined) ms.round = num(d.scanCount, ms.round);
+    if (d.sOk !== undefined) ms.ok = num(d.sOk, ms.ok);
+    if (d.sTo !== undefined) ms.timeout = num(d.sTo, ms.timeout);
+    if (d.sEr !== undefined) ms.err = num(d.sEr, ms.err);
+    if (Array.isArray(d.dataList)) {
+      const t = clock();
+      ms.rows = d.dataList.map((r) => ({
+        addr: num(r.addr, 0), raw: num(r.rawVal, 0), val: String(r.value == null ? '' : r.value),
+        addrLabel: r.addrLabel || ('4' + String(num(r.addr, 0) + 1).padStart(4, '0')),
+        desc: '寄存器 ' + num(r.addr, 0), changed: !!r.changed, t
+      }));
+      ms.prev = {};
+      ms.rows.forEach((r) => { ms.prev[r.addr] = r.raw; });
+      ms.at = t;
+    }
+    return;
+  }
+  if (page === 'serial') {
+    const s = app.serial;
+    if (d.txMode !== undefined) s.mode = d.txMode === 'ASCII' ? 'ASCII' : 'HEX';
+    if (d.txText !== undefined) s.payload = String(d.txText);
+    if (d.appendCr !== undefined) s.appendCr = !!d.appendCr;
+    if (d.appendLf !== undefined) s.appendLf = !!d.appendLf;
+    if (d.crcOn !== undefined) s.crcOn = !!d.crcOn;
+    if (d.loopInterval !== undefined) s.loopMs = clamp(num(d.loopInterval, s.loopMs), 100, 60000);
+    if (d.loopOn === false) {
+      stopSerialLoop(true);
+      s.looping = false;
+    } else if (d.loopOn === true) {
+      s.looping = true;
+    }
+    if (d.txCount !== undefined) s.txCount = num(d.txCount, s.txCount);
+    if (d.rxCount !== undefined) s.rxCount = num(d.rxCount, s.rxCount);
+    if (Array.isArray(d.logs) && d.logs.length) {
+      // 对端串口页的帧也进桌面报文流（logs 是按时间正序，packets 是最新在上）
+      app.packets = d.logs.slice().reverse().map((l, i) => ({
+        dir: String(l.dir || 'SYS').toUpperCase(),
+        hex: l.hex || '',
+        note: l.note || '',
+        t: l.time || '',
+        len: l.len || 0,
+        at: Date.now() - i
+      })).slice(0, 240);
+    }
+    return;
+  }
+  if (page === 'rtu') {
+    const r = app.rtu;
+    if (d.targetSlave !== undefined) r.slave = clamp(num(d.targetSlave, r.slave), 1, 247);
+    if (d.profileId && String(d.profileId) !== r.profileId) {
+      r.profileId = String(d.profileId);
+      ensureRtuRows();
+    }
+    if (Array.isArray(d.readRows)) {
+      d.readRows.forEach((rr) => {
+        const addr = parseInt(String(rr.addrHex || '').replace(/^0x/i, ''), 16);
+        const it = (r.rows || []).find((x) => x.addr === addr) ||
+          (r.rows || []).find((x) => String(x.name) === String(rr.name));
+        if (!it) return;
+        const raw = parseInt(String(rr.rawHex || '').replace(/^0x/i, ''), 16);
+        it.cur = isNaN(raw) ? null : raw;
+        it.read = !rr.bad && !isNaN(raw);
+        it.err = it.read ? '' : '读取失败';
+      });
+      r.hasRead = d.readRows.some((x) => !x.bad);
+      r.readAt = clock();
+    }
+    if (d.busy !== undefined) r.reading = !!d.busy;
+    return;
+  }
+  if (page === 'uart') {
+    if (d.baudIndex !== undefined) {
+      const b = PHONE_BAUDS[num(d.baudIndex, 3)] || '9600';
+      const u = {
+        baud: b, dataBits: String(d.dataBits || '8'),
+        parity: String(d.parity || 'N').toUpperCase(), stopBits: String(d.stopBits || '1')
+      };
+      app.module.cur = u;
+      if (!app.module.dirty) app.module.edit = Object.assign({}, u);
+      if (app.gw) app.gw.uart = Object.assign({}, u);
+    }
+    if (d.dirty !== undefined) app.module.dirty = !!d.dirty;
+    return;
+  }
+}
+
+/** 收到 host 的 view：切页 + 套用状态（不再反向发 patch） */
+function applyHostView(pl) {
+  if (!pl || !pl.page) return;
+  // 自己发出的 patch 经 host 回显时不再套用：桌面端的轮询/循环定时器不能被自己的镜像停掉
+  if (pl.source === 'desktop') return;
+  if (pl.rev && pl.rev <= app.viewRev) return;
+  app.viewRev = pl.rev || (app.viewRev + 1);
+  const sameKey = pl.page + '|' + JSON.stringify(pl.data || {});
+  if (sameKey === app.viewLast) return;
+  const tab = TAB_OF_VIEW_PAGE[pl.page];
+  app.viewApplying = true;
+  try {
+    if (tab && app.activeTab !== tab) {
+      stopTasksForTab(tab);
+      app.activeTab = tab;
+    }
+    applyDesktopView(pl.page, pl.data || {});
+    app.viewLast = pl.page + '|' + JSON.stringify(pl.data || {});
+    renderAll();
+  } finally {
+    app.viewApplying = false;
+  }
+}
 
 /** 客户端组 RTU 帧 → raw.tx；固件只做门禁与透传，返回原始 rx */
 async function rawTx(frame, expectLen, timeoutMs) {
@@ -628,7 +925,9 @@ function renderNav() {
 function onNavTab(key) {
   if (!app.joined) { setNotice('先输入会话码接入现场'); return; }
   if (gwReady()) {
+    stopTasksForTab(key);
     app.activeTab = key;
+    if (app.gw.link === 'ble') sendViewFollow(key);
     renderAll();
     return;
   }
@@ -759,6 +1058,7 @@ function renderStage() {
     default:
       stage.innerHTML = buildToolsView();
   }
+  scheduleDesktopView();
 }
 
 function buildJoinHint() {
@@ -1030,6 +1330,7 @@ async function modscanReadOnce() {
       if (body) body.innerHTML = modscanRowsHTML();
     }
     renderStatusbar();
+    scheduleDesktopView();
   }
 }
 
@@ -1224,6 +1525,7 @@ async function serialSendOnce() {
     setBusy(-1);
     renderStatusbar();
     if (app.activeTab === 'serial') renderSerialMonitor();
+    scheduleDesktopView();
   }
 }
 
@@ -1366,6 +1668,7 @@ async function rtuReadAll() {
     setBusy(-1);
     renderStatusbar();
     if (app.activeTab === 'rtu') renderStage();
+    scheduleDesktopView();
   }
 }
 
@@ -1412,6 +1715,7 @@ function onRtuWrite(i) {
         setBusy(-1);
         if (app.activeTab === 'rtu') renderStage();
         renderStatusbar();
+        scheduleDesktopView();
       }
     }
   });
@@ -1507,6 +1811,7 @@ async function moduleRead() {
     app.module.reading = false;
     setBusy(-1);
     renderStatusbar();
+    scheduleDesktopView();
   }
 }
 
@@ -1530,6 +1835,7 @@ function moduleCommit() {
   }).finally(() => {
     setBusy(-1);
     renderStatusbar();
+    scheduleDesktopView();
   });
 }
 
@@ -1787,7 +2093,11 @@ function bind() {
   });
   $('btnNotifyFieldPage').addEventListener('click', () => {
     if (!app.joined) { setNotice('先接入会话'); return; }
-    if (gwReady()) { setNotice(gwLinkShort() + ' 下页面只存在于桌面端', true); return; }
+    if (gwReady()) {
+      if (gwLink() === 'ble') { sendViewFollow(app.activeTab); toast('已通知现场切到「' + TAB_LABEL[app.activeTab] + '」', true); return; }
+      setNotice(gwLinkShort() + ' 下页面只存在于桌面端', true);
+      return;
+    }
     send('nav.open', { page: TAB_PAGE[app.activeTab] }, { okTitle: '已通知现场切到「' + TAB_LABEL[app.activeTab] + '」' }).catch(() => {});
   });
   $('btnPingField').addEventListener('click', () => {
@@ -1874,8 +2184,7 @@ function onStageClick(e) {
   const act = el.dataset.act;
   switch (act) {
     case 'open':
-      app.activeTab = el.dataset.tab || 'tools';
-      renderAll();
+      onNavTab(el.dataset.tab || 'tools');
       break;
 
     case 'ms-area':
@@ -1958,6 +2267,7 @@ function onStageClick(e) {
         const id = num(el.dataset.id, 1);
         app.rtu.slave = id;
         app.activeTab = 'rtu';
+        if (gwReady() && gwLink() === 'ble') sendViewFollow('rtu');
         pushOp('info', '从扫描结果跳到 RTU 设置', '站号 #' + id);
         renderAll();
       }
@@ -2005,6 +2315,7 @@ function onStageInput(e) {
   if (f === 'scReg') { app.scan.reg = num(v, 0); return; }
   if (f === 'scTimeout') { app.scan.timeout = num(v, 80); return; }
   if (f === 'rtuSlave') { app.rtu.slave = clamp(num(v, 1), 1, 247); updateRtuFrames(); return; }
+  scheduleDesktopView();
 }
 
 function onStageChange(e) {
@@ -2019,7 +2330,7 @@ function onStageChange(e) {
     return;
   }
   if (f === 'modBaud') { app.module.edit.baud = el.value; app.module.dirty = true; renderStage(); return; }
-  if (f === 'serLoopMs') { app.serial.loopMs = clamp(num(el.value, 1000), 100, 60000); return; }
+  if (f === 'serLoopMs') { app.serial.loopMs = clamp(num(el.value, 1000), 100, 60000); scheduleDesktopView(); return; }
 }
 
 /* ==================================================================
@@ -2048,5 +2359,15 @@ boot();
 
 // 暴露给 Node 单测 / 调试（与旧版保持同名入口，便于脚本复用）
 if (typeof window !== 'undefined') {
-  window.__mrd = { app, onJoin, send, P, pushOp, renderAll };
+  window.__mrd = {
+    app, onJoin, send, P, pushOp, renderAll,
+    // 调试 / 单测：页面双向同步的字段映射
+    view: {
+      snapshot: desktopViewSnapshot,
+      apply: applyDesktopView,
+      applyHost: applyHostView,
+      follow: sendViewFollow,
+      publish: scheduleDesktopView
+    }
+  };
 }

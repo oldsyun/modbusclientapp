@@ -36,7 +36,8 @@
 ### A. ESP32 Headless Gateway（v1.4）
 
 新版固件（`BLE485paco.ino` v1.4）可以让 **ESP32 自己直连 broker**：现场手机在小程序里配好 WiFi、
-点「获取协作码」之后就可以离场，模块用一个 7 位 sid 自己撑着 30/60/120 分钟的会话。
+在「WiFi 配网」页点「开启远程托管」拿到 7 位码之后就可以离场；托管无时长限制，
+直到现场用 BLE 关闭 MQTT。
 
 桌面端接入方式不变（输 7 位码 → 接入）。**V2.0 起，只要收到网关的 `status` 心跳/join
 （`role:"local"` + `gw:1` 或 `tool:"SYCC-GW"`），或 `state.payload.role === "gateway"`，
@@ -49,7 +50,7 @@
 | 扫描 1~247 | `scan.start` / `scan.stop` | 复用固件扫描状态机，进度以 `state {scan:"HIT",addr}` 推回 |
 | 串口直发 | `serial.send {hex, wait:false}` | 只写总线不等应答，收包走 `data`（透传桥模式） |
 | 模块 485 参数 | `uart.set {baud,dataBits,stopBits,parity}` | 写 NVS 并立即生效；面板底部「应用模块参数」 |
-| 401/403 | —— | 现场选的是「只读」档时写/参数按钮置灰，强行发也会被固件回 403 |
+| 401/403 | —— | 现场托管固定「完全」权限；旧会话 / 手机托管为只读档时，写/参数命令会被固件回 403 |
 
 > **桌面端优先（V2.0）**：桌面端 `status`/`cmd` 带 `cid` + `kind:"desktop"`。网关托管期间
 > 只放行桌面端，小程序 remote 的命令回 `409`，避免两端同时抢 485 总线；桌面端断开后
@@ -77,8 +78,23 @@
 > 现场先在「远程请求接入」弹窗点「允许」；未允许前 `status` 不带 `gw`，
 > `sync` 回 `{awaitAllow:true}`（顶栏显示「等待现场在小程序里点允许」），实际读写命令回 `403`。
 >
-> 桌面端接管时，现场小程序会自动退回首页：工具页会抢 `BleTransport.onMessage`，
-> 不让路就会和桌面端的 raw.tx 回包串台。
+> 桌面端接管后现场小程序**不再退回首页**，而是页面跟随控制端：桌面切到扫描/Modscan/串口/RTU/模块，
+> 现场手机 `navigateTo/redirectTo` 到同一页；现场页的 `onMessage` 只负责本地显示，代理回包走
+> `addSniffer` 旁听，两边不抢接收流。
+
+### C. 页面双向同步（view-sync）
+
+除了命令，桌面端与现场手机还同步**当前页 + 页面 data 快照**：
+
+| 消息 | 方向 | 说明 |
+| --- | --- | --- |
+| `view.follow {page,data}` | 桌面 → 手机 | 桌面切页（工具卡片 / 导航坞 / 「通知现场切到此页」） |
+| `view.patch {page,data}` | 桌面 → 手机 | 桌面表单/数据变化（节流 200ms） |
+| `view {page,data,source,rev}` | 手机 → 桌面 | 现场页当前状态；桌面映射成自己的 `app.*` 后重绘 |
+
+- 现场手机自己切页 / 读写 → 同样回 `view`，桌面端跟着切页、更新表单与表格（双向，不是单向投屏）。
+- 自己发出的 patch 经 host 回显时按 `source` 丢弃，避免回环；桌面端自己的轮询不会因为镜像回传被误停。
+- 只有 BLE 小程序代理有现场页；ESP32 直连网关没有小程序页面，不会发 `view.*`。
 
 ## 界面对齐：appui v3.2 桌面工作台
 
@@ -134,6 +150,7 @@ desktop-client/
 ├── tests/
 │   ├── unit.test.js      # 协议层单测（node --test，离线）
 │   ├── modbus.test.js    # CRC16 向量 / 组帧 / 解析单测（离线）
+│   ├── view-map.mjs      # 页面同步字段映射：app.* ⇄ 现场页面 data（DOM 桩，离线）
 │   ├── e2e.gateway.mjs   # 网关模式端到端：模拟 ESP32 → 桌面远程端（离线，无需 broker）
 │   ├── e2e.bleproxy.mjs  # BLE 小程序代理端到端：真实 Host+代理 ↔ 真实桌面 Session（离线）
 │   └── smoke.broker.mjs  # broker 连通性冒烟（需网络 + 环境变量）
@@ -144,11 +161,11 @@ desktop-client/
 
 ```bash
 npm install                 # 首次：npm 缓存在 ~/.npm 被沙箱挡时加 --cache ./.npm-cache
-npm test                    # 协议层单测 + 网关端到端（离线）
+npm test                    # 协议单测 + 页面映射 + 网关 e2e + BLE 代理 e2e（全离线）
 node tests/smoke.broker.mjs # 真实 broker 冒烟（wss 握手/账号/订阅/发布）
 node tests/e2e.session.mjs  # 端到端：Node 模拟现场端 + 桌面端 remote 对通（9 项，需网络）
 node tests/e2e.gateway.mjs  # 网关模式：模拟 ESP32 直连 broker 的行为（离线）
-node tests/e2e.bleproxy.mjs # BLE 小程序代理：手机 Host/BLE 代理 ↔ 桌面端全链路（离线；单仓 CI 自动跳过）
+node tests/e2e.bleproxy.mjs # BLE 小程序代理：手机 Host/BLE 代理 ↔ 桌面端全链路（26 项，离线；单仓 CI 自动跳过）
 
 npm run tauri dev           # 桌面壳 + 前端热更（调试）
 npm run dev                 # 纯浏览器打开 http://localhost:5173（无 Tauri 也能跑）
@@ -213,7 +230,7 @@ npm run tauri build         # 当前平台
 
 流程要点：
 
-1. 先跑 `test`：`npm test`（协议单测 + 网关 e2e，离线）；
+1. 先跑 `test`：`npm test`（协议单测 + 页面映射 + 网关/BLE 代理 e2e，离线）；
 2. `build` 矩阵按需安装 Rust target（universal / i686），Linux 自动装 webkit2gtk-4.1 等依赖；
 3. 直接调 `npx tauri build <args>`（矩阵透传 `--target` / `--bundles`），产物用 `upload-artifact@v4` 上传；
    `.app` 先用 `ditto` 打成 zip，避免 artifact 解包破坏 Framework 符号链接；
@@ -277,8 +294,10 @@ workflow 在 `build` job 里把它们映射成 `VITE_MQTT_*`，`npx tauri build`
 
 - 桌面端仍是 remote 角色：所有 485 字节由现场模块 / 手机发出（协议核心约束，无直连硬件路径）；
   模块托管时桌面端负责**客户端组帧**（`raw.tx`），固件只做长度/CRC/FC 门禁与透传。
-- 现场手机蓝牙连着模块时走 BLE 小程序代理，桌面端拿到完整网关工作台；只有蓝牙没连 /
-  现场主动关掉代理时才退回镜像页（`ui.action`），此时 Modscan 轮询 / 扫描进度不可用。
+- 现场手机蓝牙连着模块时走 BLE 小程序代理，桌面端拿到完整网关工作台与页面双向同步；
+  只有蓝牙没连 / 现场主动关掉代理时才退回镜像页（`ui.action`），此时 Modscan 轮询 / 扫描进度不可用。
+- 页面同步以 host（现场页）为权威：同一时刻桌面端优先驱动，小程序 remote 只能看不能驱；
+  两端同时改同一表单时后到者覆盖，写类动作仍不自动重发。
 - 写命令被现场确认弹窗拦下时显示"等待现场确认"（202），最长 60s。
 - 与小程序远程端互斥：同一 sid 同时只允许一个 remote（第二个 join 会被现场 409 拒绝）；
   网关托管期间桌面端带 `kind:"desktop"` 优先准入。
