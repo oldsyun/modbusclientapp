@@ -18,28 +18,28 @@
 > 见「Broker 配置」一节）。拿到的安装包已内置配置；自行编译时请提供你自己的 `VITE_MQTT_*`。
 
 ```
-┌──────────────────┐  BLE   ┌────────────────┐  RS485  ┌─────────┐
-│ 小程序现场端     │──────▶│ ESP32 BLE485   │────────▶│ RTU 设备 │
-└────────┬─────────┘       └────────────────┘         └─────────┘
+┌──────────────────┐  BLE    ┌────────────────┐  RS485   ┌ ───────── ┐
+│ 小程序现场端     │──────▶  │ ESP32 BLE485   │────────▶│ RTU 设备  │
+└────────┬─────────┘         └────────────────┘          └ ───────── ┘
          │ MQTT over wss (assist/{sid}/#)
 ┌────────▼─────────┐
-│     MQTT broker │
+│     MQTT broker  │
 └────────┬─────────┘
          │ MQTT over wss                    ← 本仓库桌面端从这里接入
 ┌────────▼─────────┐
-│  桌面远程端       │  只发意图、只收镜像，不直连硬件
+│  桌面远程端       │  
 └──────────────────┘
 ```
 
 ## ★ 网关模式：ESP32 直连 + BLE 小程序代理（两者同一套 UI）
 
-### A. ESP32 Headless Gateway（v1.4）
+### A. ESP32 Headless Gateway
 
-新版固件（`BLE485paco.ino` v1.4）可以让 **ESP32 自己直连 broker**：现场手机在小程序里配好 WiFi、
+新版固件（`BLE485v2.ino` ）可以让 **ESP32 自己直连 broker**：现场手机在小程序里配好 WiFi、
 在「WiFi 配网」页点「开启远程托管」拿到 7 位码之后就可以离场；托管无时长限制，
 直到现场用 BLE 关闭 MQTT。
 
-桌面端接入方式不变（输 7 位码 → 接入）。**V2.0 起，只要收到网关的 `status` 心跳/join
+桌面端接入方式不变（输 7 位码 → 接入）。
 （`role:"local"` + `gw:1` 或 `tool:"SYCC-GW"`），或 `state.payload.role === "gateway"`，
 就立刻切到网关调试台**，不再等现场手机的 pageSchema；同时会自动发 `sync.request` 拉全量说明书。
 
@@ -52,13 +52,13 @@
 | 模块 485 参数 | `uart.set {baud,dataBits,stopBits,parity}` | 写 NVS 并立即生效；面板底部「应用模块参数」 |
 | 401/403 | —— | 现场托管固定「完全」权限；旧会话 / 手机托管为只读档时，写/参数命令会被固件回 403 |
 
-> **桌面端优先（V2.0）**：桌面端 `status`/`cmd` 带 `cid` + `kind:"desktop"`。网关托管期间
+> **桌面端优先**：桌面端 `status`/`cmd` 带 `cid` + `kind:"desktop"`。网关托管期间
 > 只放行桌面端，小程序 remote 的命令回 `409`，避免两端同时抢 485 总线；桌面端断开后
 > 小程序才能接管。
 
 协议细节见配套仓库的 `BLE485paco-开发总结与接口文档.md` §12.4 与 `ESP32-WiFi配网与直连远程协助-设计需求.md`。
 
-### B. BLE 小程序代理（V2.2）
+### B. BLE 微信小程序代理
 
 现场没有可用 WiFi、或就想让手机当桥时：小程序用蓝牙连模块，再由手机连 MQTT。
 `miniprogram/utils/assist/ble-gateway.js` 把桌面端的网关命令翻译成 BLE 帧：
@@ -96,9 +96,7 @@
 - 自己发出的 patch 经 host 回显时按 `source` 丢弃，避免回环；桌面端自己的轮询不会因为镜像回传被误停。
 - 只有 BLE 小程序代理有现场页；ESP32 直连网关没有小程序页面，不会发 `view.*`。
 
-## 界面对齐：appui v3.2 桌面工作台
-
-UI 按设计原型 `docs/appui-preview-v3.2.html` 落地（原文件 `modbus_appui_preview_v3_2.html`），与小程序同源，但按桌面习惯重新排布。
+## 界面
 
 | 深色工业台 · Modscan | 深色 · 模块设置 | 浅色同源 · Modscan |
 | --- | --- | --- |
@@ -214,9 +212,6 @@ npm run tauri build         # 当前平台
 - Windows：`.../bundle/{nsis,msi}/`（需在 Windows 上构建）
 - Linux：`.../bundle/{deb,appimage,rpm}/`（Ubuntu 22.04，需 `libwebkit2gtk-4.1-dev`）
 
-> **`productName` 必须是 ASCII**（当前为 `Modbus Remote Bench`）。它会被拿去当 deb 包名和
-> MSI 的 WiX 字符串：中文会让 Linux 报 `invalid name "...": contains invalid character`，
-> 让 WiX 报 `LGHT0311`（code page 1252 编不进中文）。窗口标题仍是「Modbus 远程调试台」，不影响界面。
 
 ### 多平台 CI（.github/workflows/desktop-client.yml）
 
@@ -291,19 +286,3 @@ workflow 在 `build` job 里把它们映射成 `VITE_MQTT_*`，`npx tauri build`
 | 会话码 | 7 位 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` | `SID_LEN / SID_CHARS` |
 | broker | `wss://<host>/mqtt`（默认口不拼端口，地址由 `VITE_MQTT_*` 注入） | `MQTT_SERVER / buildWsUrl()` |
 
-## 已知边界
-
-- 桌面端仍是 remote 角色：所有 485 字节由现场模块 / 手机发出（协议核心约束，无直连硬件路径）；
-  模块托管时桌面端负责**客户端组帧**（`raw.tx`），固件只做长度/CRC/FC 门禁与透传。
-- 现场手机蓝牙连着模块时走 BLE 小程序代理，桌面端拿到完整网关工作台与页面双向同步；
-  只有蓝牙没连 / 现场主动关掉代理时才退回镜像页（`ui.action`），此时 Modscan 轮询 / 扫描进度不可用。
-- 页面同步以 host（现场页）为权威：同一时刻桌面端优先驱动，小程序 remote 只能看不能驱；
-  两端同时改同一表单时后到者覆盖，写类动作仍不自动重发。
-- 写命令被现场确认弹窗拦下时显示"等待现场确认"（202），最长 60s。
-- 与小程序远程端互斥：同一 sid 同时只允许一个 remote（第二个 join 会被现场 409 拒绝）；
-  网关托管期间桌面端带 `kind:"desktop"` 优先准入。
-- 网关模式（ESP32 直连或 BLE 代理）都不能远程改 BLE 广播名：没有对应命令，必须现场蓝牙直连改。
-- FC03 单次读受固件 ack 尺寸限制（≤32 个寄存器）；桌面端上限取 120 并以固件返回为准。
-- BLE 代理的模块信息由现场手机读 `R-CONFIG` 后随 `role:"gateway"` 说明书上报，固件 / IP / NVS /
-  SSID / broker / 485 参数与 ESP32 直连同源；不再依赖 `R-WORK` / `R-485Setting` / `R-PartNumber` 拼装。
-- broker 地址 / 账号由构建期环境变量注入（发行包已内置）；换服务器可用界面「设置」覆盖，或在 CI 里改 Secrets 重新构建。
