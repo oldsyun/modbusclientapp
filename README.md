@@ -1,281 +1,362 @@
-# Modbus 远程调试台（desktop-client）
+# Modbus Remote Bench（桌面远程端）
 
-小程序「远程协助」的**桌面远程端**复刻：输入现场给出的 7 位会话码，在 Windows / macOS / Linux
-桌面上看到实时 485 报文流，并能远程下发命令（读寄存器、改参数、串口直发）。
+这是一个基于 MQTT + WebSocket 的 Modbus 现场远程调试桌面端，目标是复刻小程序现场端的远程协助链路：
 
+- 现场端（local）通过 MQTT 上报状态、报文和页面快照
+- 桌面端（remote）通过 MQTT 下发命令、读取状态和同步页面
+- 支持网关模式和 BLE 代理模式
+- 适用于 Windows / macOS / Linux 桌面环境
 
-桌面APP与微信小程序现场端的 `utils/assist/*`（proto / session / host）逐字节对齐。本仓库只含桌面端；
-现场端协议真源在配套仓库中。
+本仓库只包含桌面端源码；现场端的协议真源在配套小程序 / 固件项目里。本仓库与现场端按协议逐字节对齐，关键逻辑位于：
 
-> **本仓库源码不含任何真实 broker 信息**（地址 / 端口 / 账号 / 密码全部走构建期环境变量，
-> 见「Broker 配置」一节）。拿到的安装包已内置配置；自行编译时请提供你自己的 `VITE_MQTT_*`。
+- `src/lib/broker.js`：MQTT broker 配置与 topic 定义
+- `src/lib/session.js`：会话层、心跳、ACK / RESULT 处理
+- `src/lib/proto.js`：协议信封、会话码、错误码
+- `src/lib/mqtt.js`：MQTT 3.1.1 WebSocket 客户端
+- `src/lib/modbus.js`：Modbus CRC / 组帧 / 解析
 
+## 1. 当前 MQTT 主题
+
+桌面端与现场端通过下面四个主题进行通信，主题生成代码位于 `src/lib/broker.js`：
+
+```js
+export function getAssistTopics(sid) {
+  return {
+    data: 'assist/' + sid + '/data',
+    cmd: 'assist/' + sid + '/cmd',
+    status: 'assist/' + sid + '/status',
+    state: 'assist/' + sid + '/state'
+  };
+}
 ```
-┌──────────────────┐  BLE    ┌────────────────┐  RS485   ┌ ───────── ┐
-│ 小程序现场端     │──────▶  │ ESP32 BLE485   │────────▶│ RTU 设备  │
-└────────┬─────────┘         └────────────────┘          └ ───────── ┘
-         │ MQTT over wss (assist/{sid}/#)
-┌────────▼─────────┐
-│     MQTT broker  │
-└────────┬─────────┘
-         │ MQTT over wss                    ← 本仓库桌面端从这里接入
-┌────────▼─────────┐
-│  桌面远程端       │  
-└──────────────────┘
+
+### 1.1 `assist/{sid}/cmd`
+
+桌面端向现场端发命令，QoS 1。
+
+典型样例：
+
+```json
+{
+  "v": 1,
+  "sid": "ABC1234",
+  "from": "remote",
+  "type": "raw.tx",
+  "ts": 1728000000000,
+  "payload": {
+    "hex": "010300010002C5C9",
+    "expectLen": 2
+  },
+  "reqId": "r4f2k9.2m8",
+  "seq": 1,
+  "cid": "assist_remote_ABC1234_1728000000",
+  "kind": "desktop"
+}
 ```
 
-## ★ 网关模式：ESP32 直连 + BLE 小程序代理（两者同一套 UI）
+说明：
 
-### A. ESP32 Headless Gateway
+- `type` 是命令类型，例如 `raw.tx`、`serial.send`、`scan.start`、`uart.set`
+- `reqId` 用于 ACK / RESULT 对应
+- `seq` 用于去重
+- `kind: "desktop"` 表示当前命令来自桌面端，网关场景下会优先接管
 
-新版固件（`BLE485v2.ino` ）可以让 **ESP32 自己直连 broker**：现场手机在小程序里配好 WiFi、
-在「WiFi 配网」页点「开启远程托管」拿到 7 位码之后就可以离场；托管无时长限制，
-直到现场用 BLE 关闭 MQTT。
+### 1.2 `assist/{sid}/state`
 
-桌面端接入方式不变（输 7 位码 → 接入）。
-（`role:"local"` + `gw:1` 或 `tool:"SYCC-GW"`），或 `state.payload.role === "gateway"`，
-就立刻切到网关调试台**，不再等现场手机的 pageSchema；同时会自动发 `sync.request` 拉全量说明书。
+现场端向桌面端上报状态和回执，QoS 1。
 
-| 操作 | 发出的命令 | 固件行为 |
-| --- | --- | --- |
-| 读寄存器 | `raw.tx {hex,expectLen}` | 桌面端组完整 RTU 帧（FC01-04），固件只透传，回原始 `rx`，桌面端解析 values |
-| 写寄存器 | `raw.tx {hex,expectLen}` | 桌面端组 FC05/06/0F/10；FC06/16 **写后由桌面端发 FC03 读回比对**（写类永不自动重发） |
-| 扫描 1~247 | `scan.start` / `scan.stop` | 复用固件扫描状态机，进度以 `state {scan:"HIT",addr}` 推回 |
-| 串口直发 | `serial.send {hex, wait:false}` | 只写总线不等应答，收包走 `data`（透传桥模式） |
-| 模块 485 参数 | `uart.set {baud,dataBits,stopBits,parity}` | 写 NVS 并立即生效；面板底部「应用模块参数」 |
-| 401/403 | —— | 现场托管固定「完全」权限；旧会话 / 手机托管为只读档时，写/参数命令会被固件回 403 |
+典型样例：
 
-> **桌面端优先**：桌面端 `status`/`cmd` 带 `cid` + `kind:"desktop"`。网关托管期间
-> 只放行桌面端，小程序 remote 的命令回 `409`，避免两端同时抢 485 总线；桌面端断开后
-> 小程序才能接管。
+1) ACK（命令已受理）
 
-协议细节见配套仓库的 `BLE485paco-开发总结与接口文档.md` §12.4 与 `ESP32-WiFi配网与直连远程协助-设计需求.md`。
-
-### B. BLE 微信小程序代理
-
-现场没有可用 WiFi、或就想让手机当桥时：小程序用蓝牙连模块，再由手机连 MQTT。
-`miniprogram/utils/assist/ble-gateway.js` 把桌面端的网关命令翻译成 BLE 帧：
-
-| 桌面端命令 | 手机侧动作 | 模块回包 |
-| --- | --- | --- |
-| `raw.tx {hex,timeoutMs}` | 原样写 BLE 特征 | 收齐一帧 CRC 正确的 RTU 应答 → `{rx,rxLen,elapsed}` |
-| `serial.send {hex,wait}` | 原样写 BLE | `{tx,rx,rxLen}` / `{tx,sent,bridge:true}` |
-| `scan.start/stop` | 80 字节 `R-Scan485` / `R-ScanStop` | 固件 `SCAN485:*` 行 → `state {scan:"HIT"…}` |
-| `uart.set` | 80 字节 `W-485Setting` | 模块回读 → `{baud,dataBits,stopBits,parity}` |
-
-现场端在 `status` 里带 `gw:1, ble:1, link:"ble"`、在 `state` 里回
-`{role:"gateway", link:"ble", uart, perm, host:1}`。桌面端**不需要任何业务分支**：
-识别到网关后刷新到同一套「工具 / 扫描 / Modscan / 串口 / RTU / 模块」，
-顶栏只多一个「蓝牙代理」来源标记；蓝牙一断，顶栏变「BLE 代理暂停」，命令回 `409`。
-
-> 现场先在「远程请求接入」弹窗点「允许」；未允许前 `status` 不带 `gw`，
-> `sync` 回 `{awaitAllow:true}`（顶栏显示「等待现场在小程序里点允许」），实际读写命令回 `403`。
->
-> 桌面端接管后现场小程序**不再退回首页**，而是页面跟随控制端：桌面切到扫描/Modscan/串口/RTU/模块，
-> 现场手机 `navigateTo/redirectTo` 到同一页；现场页的 `onMessage` 只负责本地显示，代理回包走
-> `addSniffer` 旁听，两边不抢接收流。
-
-### C. 页面双向同步（view-sync）
-
-除了命令，桌面端与现场手机还同步**当前页 + 页面 data 快照**：
-
-| 消息 | 方向 | 说明 |
-| --- | --- | --- |
-| `view.follow {page,data}` | 桌面 → 手机 | 桌面切页（工具卡片 / 导航坞） |
-| `view.patch {page,data}` | 桌面 → 手机 | 桌面表单/数据变化（节流 200ms） |
-| `view {page,data,source,rev}` | 手机 → 桌面 | 现场页当前状态；桌面映射成自己的 `app.*` 后重绘 |
-
-- 现场手机自己切页 / 读写 → 同样回 `view`，桌面端跟着切页、更新表单与表格（双向，不是单向投屏）。
-- 自己发出的 patch 经 host 回显时按 `source` 丢弃，避免回环；桌面端自己的轮询不会因为镜像回传被误停。
-- 只有 BLE 小程序代理有现场页；ESP32 直连网关没有小程序页面，不会发 `view.*`。
-
-## 界面
-
-| 深色工业台 · Modscan | 深色 · 模块设置 | 浅色同源 · Modscan |
-| --- | --- | --- |
-| ![dark modscan](docs/workbench-dark.png) | ![module](docs/workbench-module.png) | ![light](docs/workbench-light.png) |
-
-
-
-- **顶部链路带**：会话码 / 服务器 / 现场在线 / 485 参数 / 权限 / NVS 与 SSID 胶囊；「结束协助」「重新同步」常驻。
-- **按钮收敛**：主题移入「设置」；点导航页即同步，不再单独放「通知现场」；右栏固定双分屏，去掉布局切换；离线横幅不再放 Ping/收起两个按钮。
-- **二级工具坞**：工具总览 · 扫描 · Modscan · 串口 · RTU · 模块（与小程序 6 项工具坞一一对应）。
-- **双栏工作区**：左栏紧凑表单 + 参数表 + 帧预览；右栏「实时报文流 TX/RX + 协作记录」上下分屏，连续重复动作自动折叠 `×N`。
-- **底部固定状态栏**：指令回执 / `result` / `busy` 常驻，不再用浮层黄条遮挡表单。
-- **双主题**：深色工业台（Dark Pro）/ 浅色小程序同源（Light Sync），在「设置」里勾选并记忆；
-  浅色主题下顶部链路带一起切成浅色（`--hdr-*` token），不会留一条突兀的深色横杠。
-- **现场离线横幅**：只保留一个「重新同步」入口，不刷屏占满右栏。
-
-| 视图 | 桌面端行为 | 依赖 |
-| --- | --- | --- |
-| 工具总览 | 链路卡（网关 / 固件 / NVS / SSID / IP / broker / 485 参数 / 权限 / 报文量）+ 6 张入口卡；纯镜像时附现场镜像页 | 任意模式 |
-| 扫描 | 1~247 逐站探测进度、在线从站卡片，点卡片跳 RTU / Modscan | 网关链路 `scan.start/stop` |
-| Modscan | 四区切换（01/02/03/04）、站号 / 起始地址（支持 PLC 记号与 `0x`）/ 数量 / 间隔 / 格式；实时寄存器表、变值高亮、写值弹窗 | 网关链路 `raw.tx` |
-| 串口 | HEX/ASCII、自动 CRC16（低字节在前）、+CR/+LF、循环发送、收发监控台 | 网关链路 `serial.send` |
-| RTU | 内置 3 套寄存器模板；逐条 FC03 读现值，逐条 FC06/16 写并读回校验，写完自动切目标站号 | 网关链路 `raw.tx` |
-| 模块 | 固件 / NVS / SSID / IP / RSSI / broker / Broker IP / 工作模式 / 485 参数；`uart.set` 写 NVS 并立即生效。**不提供广播名修改 UI**（远程改不了，现场蓝牙直连才能改） | 网关链路 `uart.set` |
-| 现场镜像 | 蓝牙没连模块 / 未开网关代理时的旧模式：按 pageSchema 渲染镜像控件，点一下由现场执行（高危现场弹确认） | 纯镜像 `ui.action` |
-
-> 写操作（FC06/FC16、`uart.set`、`serial.send`）一律不自动重发；写寄存器默认 FC03 读回比对，差异写进右栏与状态栏。
->
-> 设计稿里的示例报文（如 `01 06 00 07 00 33 79 C8`）是手写的示意值，CRC 与真实计算不一致；
-> 程序里的帧预览与下发帧一律由 `src/lib/modbus.js` 按 CRC16（0xA001、低字节在前）现算，
-> 单测用已知向量 `01 03 0000 000A → C5 CD`、`01 06 0001 0005 → 18 09` 锁定。
-
-## 目录结构
-
+```json
+{
+  "v": 1,
+  "sid": "ABC1234",
+  "from": "local",
+  "type": "ack",
+  "ts": 1728000000100,
+  "payload": {
+    "reqId": "r4f2k9.2m8",
+    "ok": true,
+    "code": 200,
+    "msg": "",
+    "data": null
+  },
+  "seq": 5
+}
 ```
-desktop-client/
-├── index.html            # 工作台骨架（链路带 / 工具坞 / 双栏 / 状态栏 / 弹层）
+
+2) RESULT（命令执行完成）
+
+```json
+{
+  "v": 1,
+  "sid": "ABC1234",
+  "from": "local",
+  "type": "result",
+  "ts": 1728000000200,
+  "payload": {
+    "reqId": "r4f2k9.2m8",
+    "ok": true,
+    "code": 200,
+    "msg": "",
+    "data": {
+      "values": [123, 456],
+      "slave": 1
+    }
+  },
+  "seq": 6
+}
+```
+
+3) 视图同步 / 页面状态
+
+```json
+{
+  "v": 1,
+  "sid": "ABC1234",
+  "from": "local",
+  "type": "view",
+  "ts": 1728000000300,
+  "payload": {
+    "page": "modscan",
+    "data": {
+      "slave": 1,
+      "start": 0,
+      "count": 10
+    }
+  },
+  "seq": 7
+}
+```
+
+### 1.3 `assist/{sid}/data`
+
+现场端或桌面端上报原始报文流和日志，用于实时监控，QoS 0。
+
+典型样例：
+
+```json
+{
+  "v": 1,
+  "sid": "ABC1234",
+  "from": "local",
+  "type": "log",
+  "ts": 1728000000400,
+  "payload": {
+    "dir": "rx",
+    "hex": "010300010002C5C9",
+    "len": 8,
+    "ts": 1728000000
+  },
+  "seq": 8
+}
+```
+
+说明：
+
+- 这里的 `payload` 是可以丢失的流数据，不保证可靠传输
+- 典型使用场景包括 RTU 报文采样、串口透传日志、Modscan 报文记录
+
+### 1.4 `assist/{sid}/status`
+
+在线状态与心跳消息，QoS 1，状态消息例子：
+
+```json
+{
+  "action": "join",
+  "role": "remote",
+  "tool": "desktop",
+  "ver": 1,
+  "ts": 1728000000500,
+  "cid": "assist_remote_ABC1234_1728000000",
+  "kind": "desktop"
+}
+```
+
+```json
+{
+  "action": "heartbeat",
+  "role": "local",
+  "tool": "gateway",
+  "ver": 1,
+  "ts": 1728000000600,
+  "cid": "assist_local_ABC1234_1728000000"
+}
+```
+
+```json
+{
+  "action": "leave",
+  "role": "local",
+  "ts": 1728000000700
+}
+```
+
+说明：
+
+- `join`：加入会话
+- `heartbeat`：保活
+- `leave`：离开 / 断开
+- `LWT`（Last Will）也按该格式发送，`role` 会标识离开的角色
+
+## 2. 协议信封结构
+
+所有消息都遵循统一信封格式：
+
+```js
+export function envelope(sid, from, type, payload, reqId) {
+  var o = {
+    v: VERSION,
+    sid: sid,
+    from: from,
+    type: type,
+    ts: Date.now(),
+    payload: payload || {}
+  };
+  if (reqId) o.reqId = reqId;
+  return o;
+}
+```
+
+核心字段：
+
+- `v`：协议版本，当前 `1`
+- `sid`：会话码，7 位字符
+- `from`：消息来源，`local` 或 `remote`
+- `type`：消息类型，如 `cmd`、`ack`、`result`、`view`、`log`
+- `payload`：实际内容
+- `ts`：时间戳（毫秒）
+- `reqId`：请求 ID，命令和回执匹配用
+- `seq`：递增序号，用于去重
+- `cid`：客户端 ID
+- `kind`：链路来源，`desktop` / `gateway` / `ble` 等
+
+## 3. 关键行为规范
+
+### 3.1 会话码
+
+会话码长度固定 7 位，字符集为：
+
+```js
+'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+```
+
+不包含容易混淆的 `0 O 1 I`。
+
+### 3.2 命令与回执
+
+- `cmd` 发送命令，使用 `sendCmd()`
+- 命令等待 `ack` 或 `result`
+- 若现场需要确认，则先回 `ack` + `code: 202`，后续再发送 `result`
+- 超时与重试规则：
+  - 普通命令允许补发一次
+  - 写类命令不自动补发
+  - 超时后抛出 `TIMEOUT`
+
+### 3.3 去重
+
+同一 `from + seq` 只处理一次，借助 `Deduper` 在 `session.js` 中实现，避免重复消息造成重复执行。
+
+### 3.4 连接与心跳
+
+- `HEARTBEAT_MS = 15000`
+- `PEER_TIMEOUT_MS = 30000`
+- 本地和远程都会通过 `status` 主题发送 `join` / `heartbeat` / `leave`
+- 如果 30 秒内没有收到对端心跳，则视为对端离线
+
+## 4. 实际通道示意
+
+```text
+现场端(local)                    MQTT Broker                       桌面端(remote)
+   │
+   │  publish status / state / data   ───▶  assist/{sid}/status
+   │                                     ├─ assist/{sid}/state
+   │                                     └─ assist/{sid}/data
+   │
+   │  ◀──── subscribe / receive ──────  assist/{sid}/cmd
+   │
+   │  publish ack / result ───────────▶ assist/{sid}/state
+   │
+   └─────────────────────────────────────────────────────────────────────┘
+```
+
+## 5. 项目结构
+
+```text
+modbusclientapp/
+├── README.md
+├── index.html
+├── package.json
 ├── src/
-│   ├── main.js           # 工作台控制器 + 6 个视图渲染（工具/扫描/Modscan/串口/RTU/模块）
-│   ├── style.css         # appui v3.2 设计系统（双主题 tokens + 组件 + 响应式）
+│   ├── main.js
+│   ├── style.css
 │   └── lib/
-│       ├── proto.js      # 信封 / seq 去重 / reqId（对应 utils/assist/proto.js）
-│       ├── mqtt.js       # MQTT 3.1.1 over WebSocket（对应 utils/mqtt.js）
-│       ├── broker.js     # broker 配置 / topic / 会话码
-│       ├── modbus.js     # CRC/组帧/解析（客户端组帧路径，对应 modbus-core.js）
-│       ├── addr.js       # PLC 地址换算
-│       ├── presets.js    # RTU 寄存器模板（对应 utils/rtu-presets.js）
-│       └── session.js    # 会话层：ack/202、心跳、重连（对应 utils/assist/session.js）
-├── src-tauri/            # Tauri 2 壳：Rust 只开窗口，业务全在前端
+│       ├── broker.js
+│       ├── mqtt.js
+│       ├── modbus.js
+│       ├── proto.js
+│       ├── session.js
+│       ├── addr.js
+│       └── presets.js
+├── src-tauri/
 ├── tests/
-│   ├── unit.test.js      # 协议层单测（node --test，离线）
-│   ├── modbus.test.js    # CRC16 向量 / 组帧 / 解析单测（离线）
-│   ├── view-map.mjs      # 页面同步字段映射：app.* ⇄ 现场页面 data（DOM 桩，离线）
-│   ├── e2e.gateway.mjs   # 网关模式端到端：模拟 ESP32 → 桌面远程端（离线，无需 broker）
-│   ├── e2e.bleproxy.mjs  # BLE 小程序代理端到端：真实 Host+代理 ↔ 真实桌面 Session（离线）
-│   └── smoke.broker.mjs  # broker 连通性冒烟（需网络 + 环境变量）
 └── vite.config.js
 ```
 
-## 本地开发
+## 6. 配置说明
 
-```bash
-npm install                 # 首次：npm 缓存在 ~/.npm 被沙箱挡时加 --cache ./.npm-cache
-npm test                    # 协议单测 + 页面映射 + 网关 e2e + BLE 代理 e2e（全离线）
-node tests/smoke.broker.mjs # 真实 broker 冒烟（wss 握手/账号/订阅/发布）
-node tests/e2e.session.mjs  # 端到端：Node 模拟现场端 + 桌面端 remote 对通（9 项，需网络）
-node tests/e2e.gateway.mjs  # 网关模式：模拟 ESP32 直连 broker 的行为（离线）
-node tests/e2e.bleproxy.mjs # BLE 小程序代理：手机 Host/BLE 代理 ↔ 桌面端全链路（26 项，离线；单仓 CI 自动跳过）
+源码中不写真实 broker 地址，全部通过构建期环境变量注入：
 
-npm run tauri dev           # 桌面壳 + 前端热更（调试）
-npm run dev                 # 纯浏览器打开 http://localhost:5173（无 Tauri 也能跑）
-```
-
-> 浏览器模式是天然的兜底：Tauri webview 有问题时 `npm run dev` + Chrome 即可用。
-
-## Broker 配置（不写进源码）
-
-仓库里**不含真实 broker 地址 / 端口 / 账号 / 密码**，全部由构建期环境变量注入：
-
-| 变量 | 含义 | 默认 |
-| --- | --- | --- |
-| `VITE_MQTT_HOST` | broker 主机名 | 空（未配置） |
-| `VITE_MQTT_PORT` | WebSocket 端口，`0` 表示用协议默认口（wss→443 / ws→80） | `0` |
-| `VITE_MQTT_PATH` | WebSocket 路径 | `/mqtt` |
-| `VITE_MQTT_SECURE` | `wss://` 还是 `ws://` | `true` |
-| `VITE_MQTT_USERNAME` | 账号 | 空 |
-| `VITE_MQTT_PASSWORD` | 密码 | 空 |
-| `VITE_MQTT_KEEPALIVE` | 心跳秒数 | `60` |
-
-运行时优先级：**本机「设置」面板（localStorage）> 构建期环境变量 > 空**。
-标题栏会显示实际生效的 broker；未配置时提示「点设置」。
-
-本地开发：
-
-```bash
-cp .env.example .env        # 填自己的 VITE_MQTT_*，.env 已被 gitignore
-# 或临时：
-VITE_MQTT_HOST=broker.example.com VITE_MQTT_USERNAME=user VITE_MQTT_PASSWORD=pass npm run build
-```
-
-**CI 用 GitHub Secrets 注入**（见下节）—— 源码与 git 历史里不出现这些明文值。
-
-> 发行包为了开箱即连，会把配置编进二进制里，所以 **仓库请保持 private**；
-> 想要连地址都不进产物，就把 `MQTT_HOST` 留空，改由使用者在界面「设置」里填。
-
-## 构建（体积目标 < 10MB 安装包）
-
-```bash
-npm run tauri build         # 当前平台
-```
-
-- macOS：`src-tauri/target/release/bundle/{dmg,macos}/`
-- Windows：`.../bundle/{nsis,msi}/`（需在 Windows 上构建）
-- Linux：`.../bundle/{deb,appimage,rpm}/`（Ubuntu 22.04，需 `libwebkit2gtk-4.1-dev`）
-
-
-### 多平台 CI（.github/workflows/desktop-client.yml）
-
-一条流水线覆盖 **Linux(Debian 系) / Windows x64 / Windows x86 / macOS Universal**：
-
-| Job | Runner | 产物 |
-| --- | --- | --- |
-| `Linux-x64` | ubuntu-22.04（glibc 2.35） | `.deb` / `.AppImage` / `.rpm` |
-| `windows-x64` | windows-latest | `.msi` / `.exe`(NSIS) |
-| `windows-x86` | windows-latest + `i686-pc-windows-msvc` | `.exe`(NSIS)，**实验性**（需 32 位 WebView2 运行时，`continue-on-error`） |
-| `macos-universal` | macos-latest + `--target universal-apple-darwin` | `.dmg` + `.app` 的 zip（Intel / Apple Silicon 通用） |
-
-流程要点：
-
-1. 先跑 `test`：`npm test`（协议单测 + 页面映射 + 网关/BLE 代理 e2e，离线）；
-2. `build` 矩阵按需安装 Rust target（universal / i686），Linux 自动装 webkit2gtk-4.1 等依赖；
-3. 直接调 `npx tauri build <args>`（矩阵透传 `--target` / `--bundles`），产物用 `upload-artifact@v4` 上传；
-   `.app` 先用 `ditto` 打成 zip，避免 artifact 解包破坏 Framework 符号链接；
-4. push tag `desktop-v*` 时额外跑 `release` job，把所有平台产物挂到 **正式 Release**（`softprops/action-gh-release`，`draft: false`）；
-5. 普通 push / PR 只编译不发布；`workflow_dispatch` 可手动跑。
-
-### 打一个版本（产物进 Releases）
-
-```bash
-# 1) 先把版本号改一致（三处）
-#    package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json
-# 2) 提交并推送
-git commit -am "chore: release v2.0.1" && git push
-# 3) 打 tag 并推送 —— 这一步才会跑 release job
-git tag desktop-v2.0.1 && git push origin desktop-v2.0.1
-```
-
-跑完后 Releases 页会出现 `Modbus Remote Bench desktop-v2.0.1`，挂四个平台的安装包：
-`*_x64_en-US.msi`、`*_x64-setup.exe`、`*.deb` / `*.AppImage` / `*.rpm`、`*.dmg` + `*-app.zip`。
-
-> 只 push 到 `main` 不会生成 Release —— 产物只以 Actions artifact 形式存在（30 天过期）。
-> 要进 Releases 必须推 tag，或手动点 Actions → Desktop Client → Run workflow（那次仍不发布）。
-
-**使用前配好 Secrets**（否则产物没有 broker 配置，装完得手动在「设置」里填）：
-
-仓库 → Settings → Secrets and variables → Actions → New repository secret，逐个添加：
-
-| Secret 名 | 对应变量 |
+| 变量 | 含义 |
 | --- | --- |
-| `MQTT_HOST` | `VITE_MQTT_HOST` |
-| `MQTT_PORT` | `VITE_MQTT_PORT`（可留空 = 默认口） |
-| `MQTT_PATH` | `VITE_MQTT_PATH`（默认 `/mqtt`，可不建） |
-| `MQTT_SECURE` | `VITE_MQTT_SECURE`（默认 `true`，可不建） |
-| `MQTT_USERNAME` | `VITE_MQTT_USERNAME` |
-| `MQTT_PASSWORD` | `VITE_MQTT_PASSWORD` |
-| `MQTT_KEEPALIVE` | `VITE_MQTT_KEEPALIVE`（默认 60，可不建） |
+| `VITE_MQTT_HOST` | Broker 主机名 |
+| `VITE_MQTT_PORT` | WebSocket 端口 |
+| `VITE_MQTT_PATH` | WebSocket 路径，默认 `/mqtt` |
+| `VITE_MQTT_SECURE` | 是否使用 `wss://` |
+| `VITE_MQTT_USERNAME` | 账号 |
+| `VITE_MQTT_PASSWORD` | 密码 |
+| `VITE_MQTT_KEEPALIVE` | 心跳秒数 |
 
-workflow 在 `build` job 里把它们映射成 `VITE_MQTT_*`，`npx tauri build` 会先跑 `npm run build`
-（vite），这些值就被编进 `dist/` 里的前端 JS —— 源码与 git 历史里始终是空的。
+本地开发示例：
 
-> 前端产物 gzip 后约 15KB；Rust 壳开 `opt-level=s + lto + strip`，安装包预期 3~8MB。
-> 不需要 Windows 32 位时，删掉矩阵里的 `windows-x86` 一项即可。
+```bash
+cp .env.example .env
+# 然后填入自己的 MQTT 信息
+```
 
-## 协议对齐清单（改桌面端协议代码时逐条核对）
+或者临时设置：
 
-| 项 | 值 | 对应小程序真源 |
-| --- | --- | --- |
-| 信封 | `{v:1, sid, from, type, ts, payload[, reqId, seq]}` | `assist/proto.js envelope()` |
-| topic | `assist/{sid}/{cmd,state,data,status}` | `utils/mqtt.js getAssistTopics()` |
-| remote 订阅 | state(QoS1) + data(QoS0) + status(QoS1) | `assist/session.js _onConnect()` |
-| 心跳 | 15s QoS0；对端 30s 判离线 | `HEARTBEAT_MS / PEER_TIMEOUT_MS` |
-| LWT | `{"action":"leave","role":"remote","ts"}` QoS1 | `session.js connect()` |
-| 命令超时 | 1.5s 补发一次；写类不补发；202 后 60s | `CMD_TIMEOUT_MS / CONFIRM_TIMEOUT_MS` |
-| clientId | `assist_remote_{sid}_{ts}` | `session.js connect()` |
-| 准入字段 | status/cmd 带 `cid`（clientId）+ `kind:"desktop"` | `session.js publishStatus/_nextEnvelope` |
-| 网关来源 | status `{gw:1,ble:1,link:"ble"}` / state `{role:"gateway",link:"ble"}` | `host.js _gatewayStatus/_gatewayDetail` |
-| 会话码 | 7 位 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` | `SID_LEN / SID_CHARS` |
-| broker | `wss://<host>/mqtt`（默认口不拼端口，地址由 `VITE_MQTT_*` 注入） | `MQTT_SERVER / buildWsUrl()` |
+```bash
+VITE_MQTT_HOST=broker.example.com \
+VITE_MQTT_USERNAME=user \
+VITE_MQTT_PASSWORD=pass \
+npm run build
+```
 
+## 7. 开发命令
+
+```bash
+npm install
+npm test
+npm run dev
+npm run tauri dev
+```
+
+- `npm test`：运行协议与页面同步相关测试
+- `npm run dev`：浏览器开发模式
+- `npm run tauri dev`：桌面端 electron / webview 运行模式
+
+## 8. 说明
+
+- 本项目与小程序现场端的协议保持一致，关键逻辑以现场端真实实现为准
+- MQTT topic 与 JSON 信封均按当前代码实际实现为准，不依赖文档口径歧义
+- 若需要扩展命令类型，请同时更新：
+  - `src/lib/session.js` 的 `sendCmd` / `_onState`
+  - `src/lib/proto.js` 的类型/错误定义
+  - 现场端配套实现的对应逻辑
+
+## 9. 许可证
+
+本仓库当前采用项目默认许可证配置；如需明确授权信息，请查看仓库根目录中的许可证文件。
