@@ -671,6 +671,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   justify-content: space-between;
   gap: 8px;
 }
+.dock-title { flex: 1; font-size: 12px; font-weight: 600; color: var(--ink-2); }
 .dock-split {
   flex: 1;
   display: flex;

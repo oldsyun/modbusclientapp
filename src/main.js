@@ -52,8 +52,6 @@ const app = {
   widgets: [],
 
   activeTab: 'tools',    // tools | scan | modscan | serial | rtu | module
-  dockMode: 'split',     // split | pkt | ops
-  offlineDismissed: false,
 
   packets: [],           // [{dir,hex,note,t,len,at}]
   ops: [],               // [{level,title,desc,t,count,at}]
@@ -147,7 +145,6 @@ function onJoin() {
   app.sid = sid;
   app.joined = true;
   app.onlineOnce = false;
-  app.offlineDismissed = false;
   app.cmd = { text: '正在接入 ' + sid + ' …', pending: true };
   app.result = { text: '—', ok: true };
 
@@ -244,9 +241,8 @@ function applyPeerStatus(o) {
   app.peerOnline = !!(app.sess && app.sess.peerOnline);
   if (app.peerOnline) {
     app.onlineOnce = true;
-    if (app.offlineDismissed) app.offlineDismissed = false;
     $('offlineBanner').classList.remove('show');
-  } else if (app.joined && app.onlineOnce && !app.offlineDismissed) {
+  } else if (app.joined && app.onlineOnce) {
     $('offlineTitle').textContent = '现场暂未响应（最近心跳 ' + clock() + '）';
     $('offlineBanner').classList.add('show');
   }
@@ -266,13 +262,25 @@ function applyPeerStatus(o) {
 function ensureGateway(pl) {
   const first = !app.gw;
   app.mirror = false;
-  app.gw = app.gw || { on: true, name: 'SYCC-GW', fw: '', ip: '', perm: 2, host: true, uart: null, link: 'wifi', bleDown: false };
+  app.gw = app.gw || { on: true, name: 'SYCC-GW', fw: '', nvs: 0, ip: '', ssid: '', broker: '', pin: '', mode: 0, up: 0, rssi: 0, cred: false, auto: false, wifi: false, mqtt: false, remote: false, perm: 2, host: true, uart: null, link: 'wifi', bleDown: false };
   app.gw.on = true;
   if (Number(pl.ble) === 0) app.gw.bleDown = true;
   else if (pl.ble !== undefined) app.gw.bleDown = false;
   if (pl.gateway) app.gw.name = pl.gateway;
   if (pl.fw) app.gw.fw = pl.fw;
   if (pl.ip) app.gw.ip = pl.ip;
+  if (pl.nvs !== undefined) app.gw.nvs = Number(pl.nvs) || 0;
+  if (pl.ssid !== undefined) app.gw.ssid = String(pl.ssid || '');
+  if (pl.broker !== undefined) app.gw.broker = String(pl.broker || '');
+  if (pl.pin !== undefined) app.gw.pin = String(pl.pin || '');
+  if (pl.mode !== undefined) app.gw.mode = Number(pl.mode) || 0;
+  if (pl.up !== undefined) app.gw.up = Number(pl.up) || 0;
+  if (pl.rssi !== undefined) app.gw.rssi = Number(pl.rssi) || 0;
+  if (pl.cred !== undefined) app.gw.cred = Number(pl.cred) === 1;
+  if (pl.auto !== undefined) app.gw.auto = Number(pl.auto) === 1;
+  if (pl.wifi !== undefined) app.gw.wifi = Number(pl.wifi) === 1;
+  if (pl.mqtt !== undefined) app.gw.mqtt = Number(pl.mqtt) === 1;
+  if (pl.remote !== undefined) app.gw.remote = Number(pl.remote) === 1;
   if (pl.perm) app.gw.perm = Number(pl.perm) || app.gw.perm;
   if (pl.link) app.gw.link = pl.link;
   else if (Number(pl.ble) === 1) app.gw.link = 'ble';
@@ -311,6 +319,7 @@ function syncGateway() {
 
 // sync 成功但现场还没点「允许」：顶栏保持一句等待，不要假装已经接入
 function onSyncData(data) {
+  if (data && data.role === 'gateway') { applyGatewayDetail(data); return; }
   if (data && data.awaitAllow) {
     app.cmd = { text: '等待现场在小程序里点「允许」…', pending: true };
     renderStatusbar();
@@ -399,6 +408,20 @@ function applyGatewayDetail(pl) {
     }
   }
   if (pl.sid) app.sid = pl.sid;
+  if (pl.nvs !== undefined) app.gw.nvs = Number(pl.nvs) || 0;
+  if (pl.ssid !== undefined) app.gw.ssid = String(pl.ssid || '');
+  if (pl.broker !== undefined) app.gw.broker = String(pl.broker || '');
+  if (pl.pin !== undefined) app.gw.pin = String(pl.pin || '');
+  if (pl.mode !== undefined) app.gw.mode = Number(pl.mode) || 0;
+  if (pl.up !== undefined) app.gw.up = Number(pl.up) || 0;
+  if (pl.rssi !== undefined) app.gw.rssi = Number(pl.rssi) || 0;
+  if (pl.cred !== undefined) app.gw.cred = Number(pl.cred) === 1;
+  if (pl.auto !== undefined) app.gw.auto = Number(pl.auto) === 1;
+  if (pl.wifi !== undefined) app.gw.wifi = Number(pl.wifi) === 1;
+  if (pl.mqtt !== undefined) app.gw.mqtt = Number(pl.mqtt) === 1;
+  if (pl.remote !== undefined) app.gw.remote = Number(pl.remote) === 1;
+  if (pl.fw) app.gw.fw = pl.fw;
+  if (pl.ip) app.gw.ip = pl.ip;
   renderHeader();
   if (app.activeTab === 'module') renderModuleLive();
   pushOp('info', '已同步网关说明书', [
@@ -882,10 +905,14 @@ function renderHeader() {
 
   $('syncBleName').textContent = app.gw ? app.gw.name : '—';
   $('syncFieldPage').textContent = TAB_LABEL[app.activeTab] || app.activeTab;
-  $('btnFieldBack').disabled = gwReady();
 
-  const boardBtn = $('btnToggleDockMode');
-  boardBtn.textContent = '报文流: ' + ({ split: '分屏同显', pkt: '仅报文流', ops: '仅操作记录' }[app.dockMode] || '分屏同显');
+  const cfgBits = [];
+  if (app.gw) {
+    if (app.gw.nvs) cfgBits.push('NVS v' + app.gw.nvs);
+    if (app.gw.ssid) cfgBits.push('SSID ' + app.gw.ssid);
+  }
+  $('hdrCfgSummary').textContent = cfgBits.length ? cfgBits.join(' · ') : 'NVS: —';
+  $('pillCfg').className = 't-pill' + (cfgBits.length ? ' ok' : '');
 }
 
 function setBusy(delta) {
@@ -1010,11 +1037,8 @@ function renderDock() {
     }).join('');
   }
 
-  $('panePackets').style.display = app.dockMode === 'ops' ? 'none' : 'flex';
-  $('paneOps').style.display = app.dockMode === 'pkt' ? 'none' : 'flex';
-  document.querySelectorAll('#dockModeSeg .seg-i').forEach((b) => {
-    b.classList.toggle('on', b.dataset.dmode === app.dockMode);
-  });
+  $('panePackets').style.display = 'flex';
+  $('paneOps').style.display = 'flex';
   renderHeader();
 }
 
@@ -1063,17 +1087,10 @@ function renderStage() {
 
 function buildJoinHint() {
   return '<div class="join-hint">' +
-    '<h3>接入现场调试通道</h3>' +
-    '<p>在顶部「会话码」里填现场给出的 7 位码（大写字母 / 数字，不含 O/0/I/1）。' +
-    '两种现场形态都接：ESP32 自己连云端时桌面端直接接管 485 总线；现场小程序用蓝牙连模块、再由手机连云端时，' +
-    '桌面端复用同一套网关工作台（BLE 小程序代理），无需现场离场。</p>' +
-    '<div class="join-steps">' +
-    '<div class="join-step"><i>1</i><span>现场在小程序里开启「远程托管」，拿到 7 位远程码。</span></div>' +
-    '<div class="join-step"><i>2</i><span>把码填入顶部，点「接入」；手机托管 / BLE 代理需现场点「允许」，ESP32 直连自动放行。</span></div>' +
-    '<div class="join-step"><i>3</i><span>接入后左栏就是完整工作台：扫描 / Modscan / 串口 / RTU / 模块参数，右栏实时报文流。</span></div>' +
-    '</div>' +
-    '<div class="join-note">当前 Broker：<b class="mono">' + esc(buildWsUrl(MQTT_CONFIG_FROM(loadBroker())) || '未配置（点右上角「设置」）') + '</b>。' +
-    '所有落到 485 总线的字节仍由现场模块 / 手机发出，桌面端只发意图与组帧，不直连硬件。</div>' +
+    '<h3>接入现场</h3>' +
+    '<p>输入 7 位会话码，点「接入」。</p>' +
+    '<div class="join-note">Broker：<b class="mono">' +
+    esc(buildWsUrl(MQTT_CONFIG_FROM(loadBroker())) || '未配置（点右上角「设置」）') + '</b></div>' +
     '</div>';
 }
 
@@ -1082,39 +1099,32 @@ function buildToolsView() {
   const cards = [
     {
       key: 'scan', title: '从站扫描 (1~247)', icon: '扫',
-      desc: '逐地址 FC03 探测在线表计，自动汇总在线站号，可一键跳到 RTU / Modscan。',
       stat: app.scan.list.length ? ('已发现 ' + app.scan.list.length + ' 台 (# ' + app.scan.list.slice(0, 6).join(', ') + ')') : '尚未扫描'
     },
     {
       key: 'modscan', title: 'Modscan 四区表格', icon: '表',
-      desc: '01/02/03/04 四大寄存器区连续轮询、变值高亮与点击直写。',
       stat: app.modscan.rows.length ? ('监控 ' + app.modscan.rows.length + ' 个寄存器 · ' + app.modscan.round + ' 轮') : '尚未读取'
     },
     {
       key: 'serial', title: '串口调试助手', icon: '串',
-      desc: 'HEX / ASCII 原始帧收发，自动追加 Modbus CRC16，支持循环发送。',
       stat: 'TX ' + app.txBytes + 'B / RX ' + app.rxBytes + 'B'
     },
     {
       key: 'rtu', title: '快速设置 RTU 参数', icon: '设',
-      desc: '按寄存器模板读取设备现值，改站号 / 波特率 / 校验位并自动读回校验。',
       stat: app.rtu.hasRead ? ('已读取 ' + app.rtu.readAt) : ('模板 ' + profileOf().name)
     },
     {
       key: 'module', title: '蓝牙模块设置', icon: '模',
-      desc: '查看模块身份与 485 侧串口参数；参数写入 NVS 后立即生效。',
       stat: (app.gw ? app.gw.name : '—') + ' · ' + (app.gw && app.gw.uart ? (app.gw.uart.baud + ' ' + app.gw.uart.dataBits + app.gw.uart.parity + app.gw.uart.stopBits) : '参数未读取')
     },
     {
       key: 'tools', title: '现场镜像页（手机托管）', icon: '镜',
-      desc: '现场手机托管时，这里显示现场当前页面的镜像控件，点一下由现场执行。',
       stat: app.mirror ? ('现场页面：' + (app.pageId || '—')) : (gwReady() ? (gwLinkShort() + '下不需要镜像') : '等待现场页面')
     }
   ];
 
   return '<div class="w-card mark-ok">' +
-    '<div class="w-card-hd"><div class="w-card-title">链路与运行态' +
-    '<span class="w-card-sub">' + (gwReady() ? (gwLinkLabel() + ' · 桌面端优先 · 同一套网关工作台') : '现场手机托管 · 镜像操作') + '</span></div>' +
+    '<div class="w-card-hd"><div class="w-card-title">链路与运行态</div>' +
     '<span class="tag ' + (app.peerOnline && !(app.gw && app.gw.bleDown) ? 'ok' : 'warn') + '">' +
     (app.gw && app.gw.bleDown ? '蓝牙断开' : (app.peerOnline ? '现场在线' : '现场离线')) + '</span></div>' +
     '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">' +
@@ -1139,16 +1149,10 @@ function buildToolsView() {
     cards.map((c) => '<button class="scan-card" data-act="open" data-tab="' + c.key + '" style="display:flex;flex-direction:column;gap:6px">' +
       '<div class="scan-card-top"><span class="tag info">' + esc(c.icon) + '</span><span style="color:var(--ink-3);font-size:11.5px">打开 ›</span></div>' +
       '<div style="font-size:13.5px;font-weight:600;color:var(--ink);margin-top:4px">' + esc(c.title) + '</div>' +
-      '<div style="font-size:11.5px;color:var(--ink-3);line-height:1.5;text-align:left">' + esc(c.desc) + '</div>' +
       '<div class="mono" style="font-size:11px;color:var(--accent);text-align:left">' + esc(c.stat) + '</div>' +
       '</button>').join('') +
     '</div>' +
-    (app.mirror && !gwReady() ? buildMirrorCard() : '') +
-    (gwReady() && gwLink() === 'ble'
-      ? '<div class="stage-note">当前由现场小程序把网关命令代理到蓝牙模块（<b>BLE 小程序代理</b>）：扫描 / Modscan / 串口 / RTU / 模块参数与 ESP32 WiFi 直连完全同一套工作台。</div>'
-      : '') +
-    (!gwReady() ? '<div class="stage-note">当前为现场手机托管：完整工作台（Modscan 轮询 / raw.tx / 扫描进度）需要现场保持蓝牙连接（<b>BLE 小程序代理</b>），或让模块改用 <b>ESP32 模块托管</b>。' +
-      '镜像操作仍可在上方「现场镜像页」卡片里完成。</div>' : '');
+    (app.mirror && !gwReady() ? buildMirrorCard() : '');
 }
 
 /* ---------------- 镜像页（手机托管 fallback） ---------------- */
@@ -1157,7 +1161,7 @@ function buildMirrorCard() {
   const rows = app.widgets.map((w) => mirrorRow(w)).join('');
   return '<div class="w-card"><div class="w-card-hd">' +
     '<div class="w-card-title">现场镜像 · ' + esc(TAB_LABEL[tabOfPage(app.pageId)] || app.pageId) +
-    '<span class="w-card-sub">点一行由现场执行，高危动作现场会弹确认</span></div>' +
+    '</div>' +
     '<button class="btn sm" data-act="mirror-sync">重新同步</button></div>' +
     '<div class="w-card-bd"><div class="mirror-wrap">' + (rows || '<div class="empty-state">现场页面没有可操作控件</div>') + '</div></div></div>';
 }
@@ -1179,8 +1183,7 @@ function mirrorRow(w) {
 }
 
 function buildMirrorView() {
-  return '<div class="stage-note">现场当前页已镜像到桌面端。该模式只提供现场页面的操作入口；' +
-    '需要原始报文、轮询与客户端组帧，让现场保持蓝牙连接（<b>BLE 小程序代理</b>）或开启 <b>ESP32 模块托管</b>。</div>' + buildMirrorCard();
+  return buildMirrorCard();
 }
 
 /* ---------------- Modscan ---------------- */
@@ -1209,7 +1212,7 @@ function buildModscanView() {
 
     '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">' +
     '<div class="w-card"><div class="w-card-hd"><div class="w-card-title">扫描参数</div>' +
-    '<span class="w-card-sub">FC' + (AREA_META[ms.area].fc < 10 ? '0' + AREA_META[ms.area].fc : AREA_META[ms.area].fc) + '</span></div>' +
+    '</div>' +
     '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:10px">' +
     '<div class="f-item"><div class="f-label"><span>从站站号 (1~247)</span></div>' +
     '<input class="ipt sm mono" data-field="msSlave" value="' + esc(ms.slave) + '"></div>' +
@@ -1224,19 +1227,15 @@ function buildModscanView() {
     '<select class="ipt sm" data-field="msFormat">' +
     ['Unsigned', 'Signed', 'Hex'].map((f) => '<option value="' + f + '"' + (ms.format === f ? ' selected' : '') + '>' + f + '</option>').join('') +
     '</select></div>' +
-    '<div class="f-hint">支持 PLC 记号（40001 / 30001 / 10001 / 00001）或 0x 前缀十六进制。</div>' +
     '</div></div>' +
 
-    '<div class="w-card"><div class="w-card-hd"><div class="w-card-title">实时寄存器数据表' +
-    '<span class="w-card-sub">' + esc(AREA_META[ms.area].label) + ' · 点击「写值」弹窗下发 FC06</span></div>' +
+    '<div class="w-card"><div class="w-card-hd"><div class="w-card-title">实时寄存器数据表</div>' +
     '<span class="tag tx">变值行赭红高亮</span></div>' +
     '<div class="w-card-bd tight"><table class="data-tbl"><thead><tr>' +
     '<th>寄存器地址</th><th>HEX 偏移</th><th>当前数值</th><th>HEX 原始值</th><th>刷新时间</th><th>远程改写</th>' +
     '</tr></thead><tbody id="msBody">' + modscanRowsHTML() + '</tbody></table></div>' +
-    '<div class="w-card-ft"><span>写入前自动暂停轮询，FC06 写完并读回校验通过后自动恢复扫描。</span>' +
-    '<span>' + (ms.at ? '最后刷新 ' + esc(ms.at) : '尚未读取') + '</span></div></div>' +
-    '</div>' +
-    (gwReady() ? '' : '<div class="stage-note">Modscan 需要网关链路（raw.tx）：<b>BLE 小程序代理</b>或 <b>ESP32 直连</b>；纯镜像模式请用现场镜像页。</div>');
+    '<div class="w-card-ft"><span>' + (ms.at ? '最后刷新 ' + esc(ms.at) : '尚未读取') + '</span></div></div>' +
+    '</div>';
 }
 
 function modscanRowsHTML() {
@@ -1399,7 +1398,7 @@ function buildSerialView() {
   const crc = s.mode === 'HEX' && s.crcOn ? crcHexOf(s.payload) : '不追加';
   const full = serialFinalFrame();
   return '<div class="w-card"><div class="w-card-hd">' +
-    '<div class="w-card-title">串口原始帧发送台<span class="w-card-sub">HEX / ASCII 与自动 CRC16 追加</span></div>' +
+    '<div class="w-card-title">串口原始帧发送台</div>' +
     '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
     '<span style="font-size:11.5px;color:var(--ink-3)">常用报文：</span>' +
     '<button class="btn sm" data-act="ser-preset" data-hex="01 03 00 00 00 0A">读保持 10 项</button>' +
@@ -1436,10 +1435,9 @@ function buildSerialView() {
 
     '<div class="w-card" style="flex:1;display:flex;flex-direction:column">' +
     '<div class="w-card-hd"><div class="w-card-title">串口收发实时监控台' +
-    '<span class="w-card-sub">TX 赭红 / RX 墨绿 · 与模块板载 WS2812B 灯语一致</span></div>' +
+    '</div>' +
     '<span class="mono" style="font-size:12px;color:var(--ink-2)">TX ' + app.serial.txCount + ' 帧 / RX ' + app.serial.rxCount + ' 帧</span></div>' +
-    '<div id="serMonitor" class="w-card-bd" style="display:flex;flex-direction:column;gap:6px">' + serialMonitorHTML() + '</div></div>' +
-    (gwReady() ? '' : '<div class="stage-note">串口直发走 serial.send：<b>BLE 小程序代理</b>或 <b>ESP32 直连</b>；纯镜像模式请用现场镜像页的串口控件。</div>');
+    '<div id="serMonitor" class="w-card-bd" style="display:flex;flex-direction:column;gap:6px">' + serialMonitorHTML() + '</div></div>';
 }
 
 function serialMonitorHTML() {
@@ -1601,17 +1599,15 @@ function buildRtuView() {
     PRESET.PROFILES.map((p) => '<option value="' + p.id + '"' + (p.id === r.profileId ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
     '</select></div></div>' +
     '<div style="display:flex;gap:8px">' +
-    '<button class="btn" data-act="rtu-reset">重置为未读态</button>' +
     '<button class="btn primary" data-act="rtu-read">读取设备现值 (按表逐条 FC03)</button>' +
     '</div></div></div>' +
 
-    '<div class="w-card"><div class="w-card-hd"><div class="w-card-title">RTU 参数读取与改写对照表' +
-    '<span class="w-card-sub">' + (r.hasRead ? '最后读取 ' + r.readAt + ' · ' + r.rows.filter((x) => x.read).length + '/' + r.rows.length + ' 应答' : '尚未读取设备现值') + '</span></div>' +
+    '<div class="w-card"><div class="w-card-hd"><div class="w-card-title">RTU 参数读取与改写对照表</div>' +
     '<span style="font-size:12px;color:var(--ink-3)">每条写入后自动 FC03 读回校验</span></div>' +
     '<div class="w-card-bd tight"><table class="data-tbl"><thead><tr>' +
     '<th>参数名称</th><th>寄存器 · 功能码</th><th>模板默认值</th><th>设备当前现值</th><th>准备写入的目标值</th><th>即将下发 HEX（含 CRC）</th><th>单条执行</th>' +
     '</tr></thead><tbody id="rtuBody">' + rows + '</tbody></table></div>' +
-    '<div class="w-card-ft"><span>' + esc(prof.note) + '</span><span>' + (gwReady() ? (gwLinkShort() + ' · 客户端组帧') : '需网关链路') + '</span></div></div>' +
+    '<div class="w-card-ft"><span>' + (gwReady() ? (gwLinkShort() + ' · 客户端组帧') : '需网关链路') + '</span></div></div>' +
 
     (v ? '<div class="w-card mark-ok"><div class="w-card-hd"><div class="w-card-title">最近一次写入校验 · ' + (v.readback === v.value ? '读回一致' : '读回不一致') + '</div>' +
       '<span class="tag ' + (v.readback === v.value ? 'ok' : 'warn') + '">FC06 写入 + FC03 读回</span></div>' +
@@ -1724,33 +1720,35 @@ function onRtuWrite(i) {
 /* ---------------- 模块设置 ---------------- */
 function buildModuleView() {
   const m = app.module;
+  const g = app.gw || {};
   const cur = m.cur.baud ? (m.cur.baud + ' · ' + m.cur.dataBits + m.cur.parity + m.cur.stopBits) : '—';
   const preview = m.edit.baud + ' · ' + m.edit.dataBits + m.edit.parity + m.edit.stopBits;
   const dirty = m.cur.baud && preview !== cur;
-  // 广播名不在远程序里：模块托管没有改名命令，现场蓝牙改名也不该出现在远程工作台，
-  // 所以这一页只保留"能改、可验证"的 485 侧参数（uart.set）。
-  return '<div class="w-card mark-ok"><div class="w-card-hd"><div class="w-card-title">当前模块 485 侧运行参数</div>' +
-    '<button class="btn sm" data-act="mod-read">读当前参数</button></div>' +
-    '<div class="w-card-bd" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px">' +
-    '<div><div style="font-size:11.5px;color:var(--ink-3)">模块当前生效串口参数（改完模块后，下游 485 表计必须设为同参数）</div>' +
-    '<div class="mono" style="font-size:24px;font-weight:700;margin-top:2px">' + esc(cur) + '</div></div>' +
-    '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
-    '<div><div style="font-size:11px;color:var(--ink-3)">' + (gwReady() && gwLink() === 'ble' ? '链路 / 代理' : '固件 / IP') + '</div><div class="mono" style="font-size:14px;font-weight:600">' +
-    esc(gwReady() && gwLink() === 'ble'
-      ? 'BLE 代理'
-      : ((app.gw && app.gw.fw ? 'v' + app.gw.fw : '—') + (app.gw && app.gw.ip ? ' · ' + app.gw.ip : ''))) + '</div></div>' +
-    '<div><div style="font-size:11px;color:var(--ink-3)">现场链路</div><div style="font-size:13px">' +
-    '<span class="tag ' + (app.peerOnline ? 'ok' : 'warn') + '">' + (app.peerOnline ? '在线' : '离线') + '</span> ' +
-    '<span class="tag ' + (gwReady() && !(app.gw && app.gw.bleDown) ? 'ok' : 'info') + '">' +
-    (gwReady() ? (app.gw.bleDown ? '蓝牙断开' : gwLinkShort()) : '手机托管') + '</span></div></div>' +
-    '</div></div></div>' +
+  const up = Number(g.up) || 0;
+  const upTxt = up ? (Math.floor(up / 3600) ? Math.floor(up / 3600) + ':' : '') +
+    pad2(Math.floor((up % 3600) / 60)) + ':' + pad2(up % 60) : '—';
+  const modeTxt = ['空闲', 'WiFi 已连', '连接中', '托管中'][g.mode] || '—';
+  const kv = (k, v) => '<div><div style="font-size:11px;color:var(--ink-3)">' + k +
+    '</div><div class="mono" style="font-size:13.5px;font-weight:600;word-break:break-all">' + esc(v || '—') + '</div></div>';
+  return '<div class="w-card"><div class="w-card-hd"><div class="w-card-title">模块信息</div>' +
+    '<span class="tag ' + (gwReady() ? 'ok' : 'info') + '">' + esc(modeTxt) + '</span></div>' +
+    '<div class="w-card-bd" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px">' +
+    kv('固件', g.fw ? 'v' + g.fw : '—') +
+    kv('NVS', g.nvs ? ('v' + g.nvs + (g.cred ? ' · 凭证已存' : ' · 无凭证') + (g.auto ? ' · 自动联网' : '')) : '—') +
+    kv('运行', upTxt) +
+    kv('WiFi', g.ssid ? (g.ssid + (g.ip ? ' · ' + g.ip : '')) : (g.ip || '—')) +
+    kv('信号', g.rssi ? (g.rssi + ' dBm') : '—') +
+    kv('MQTT', g.broker || '—') +
+    kv('Broker IP', g.pin || '—') +
+    kv('485 侧', cur) +
+    '</div></div>' +
 
     '<div class="w-card ' + (dirty ? 'mark-warn' : '') + '"><div class="w-card-hd">' +
-    '<div class="w-card-title">485 侧串口参数配置<span class="w-card-sub">写入 NVS 并立即生效</span></div>' +
-    (dirty ? '<span class="tag warn">未写入 · 待下发</span>' : '<span class="tag ok">与模块一致</span>') + '</div>' +
+    '<div class="w-card-title">485 侧串口参数配置</div>' +
+    (dirty ? '<span class="tag warn">未写入</span>' : '<span class="tag ok">与模块一致</span>') + '</div>' +
     '<div class="w-card-bd" style="display:flex;flex-direction:column;gap:12px">' +
     '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-radius:8px;background:var(--win-panel);border:1px solid var(--win-line-soft)">' +
-    '<span style="font-size:12px;color:var(--ink-2)">组合预览（即将写入）</span>' +
+    '<span style="font-size:12px;color:var(--ink-2)">即将写入</span>' +
     '<span class="mono" style="font-size:18px;font-weight:700;color:var(--accent)">' + esc(preview) + '</span></div>' +
     '<div class="form-grid">' +
     '<div class="f-item"><div class="f-label"><span>波特率 (bps)</span></div>' +
@@ -1771,11 +1769,9 @@ function buildModuleView() {
     '<button class="seg-i ' + (m.edit.stopBits === '2' ? 'on' : '') + '" data-act="mod-seg" data-k="stopBits" data-v="2">2 位</button>' +
     '</div></div></div>' +
     '<div style="display:flex;gap:10px;margin-top:4px">' +
-    '<button class="btn" data-act="mod-reset">恢复模块当前值</button>' +
-    '<button class="btn ' + (dirty ? 'danger' : 'primary') + '" style="flex:1" data-act="mod-commit">▲ 写入串口参数 · ' + esc(preview) + '</button>' +
-    '</div></div>' +
-    '<div class="w-card-ft"><span>提示：改完模块 485 侧参数后，下游表计必须改成同一组，否则总线无法应答。</span></div></div>' +
-    (gwReady() ? '' : '<div class="stage-note">模块参数写入需要网关链路（uart.set）：BLE 小程序代理或 ESP32 直连；纯镜像模式只能看现场操作。</div>');
+    '<button class="btn" data-act="mod-read">刷新参数</button>' +
+    '<button class="btn ' + (dirty ? 'danger' : 'primary') + '" style="flex:1" data-act="mod-commit">写入 · ' + esc(preview) + '</button>' +
+    '</div></div></div>';
 }
 
 function renderModuleLive() {
@@ -1798,7 +1794,22 @@ async function moduleRead() {
         if (!app.module.dirty) app.module.edit = Object.assign({}, u);
       }
     }
-    if (data && data.gateway) app.gw.name = data.gateway;
+    if (data) {
+      if (data.gateway) app.gw.name = data.gateway;
+      if (data.fw) app.gw.fw = data.fw;
+      if (data.nvs !== undefined) app.gw.nvs = Number(data.nvs) || 0;
+      if (data.ssid !== undefined) app.gw.ssid = String(data.ssid || '');
+      if (data.broker !== undefined) app.gw.broker = String(data.broker || '');
+      if (data.pin !== undefined) app.gw.pin = String(data.pin || '');
+      if (data.mode !== undefined) app.gw.mode = Number(data.mode) || 0;
+      if (data.up !== undefined) app.gw.up = Number(data.up) || 0;
+      if (data.rssi !== undefined) app.gw.rssi = Number(data.rssi) || 0;
+      if (data.cred !== undefined) app.gw.cred = Number(data.cred) === 1;
+      if (data.auto !== undefined) app.gw.auto = Number(data.auto) === 1;
+      if (data.wifi !== undefined) app.gw.wifi = Number(data.wifi) === 1;
+      if (data.mqtt !== undefined) app.gw.mqtt = Number(data.mqtt) === 1;
+      if (data.remote !== undefined) app.gw.remote = Number(data.remote) === 1;
+    }
     app.result = { text: '模块参数读取完成', ok: true };
     app.cmd = { text: '模块参数已读取', pending: false };
     toast('模块参数已读取', true);
@@ -1864,8 +1875,7 @@ function buildScanView() {
     '<div style="height:8px;background:var(--win-ipt);border-radius:999px;overflow:hidden">' +
     '<div id="scBar" style="height:100%;width:' + pct + '%;background:var(--rx);transition:width .3s"></div></div>' +
     '<div id="scanGrid" class="scan-grid">' + scanHitsHTML() + '</div>' +
-    '</div></div>' +
-    (gwReady() ? '' : '<div class="stage-note">扫描进度来自现场模块扫描状态机（BLE 小程序代理 / ESP32 直连）。</div>');
+    '</div></div>';
 }
 
 function scanHitsHTML() {
@@ -1938,7 +1948,6 @@ function openWriteModal(ctx) {
   wmCtx = ctx;
   $('wmTitle').textContent = ctx.title || '写入寄存器';
   $('wmSub').textContent = ctx.sub || '';
-  $('wmFoot').textContent = ctx.foot || '写完自动读回校验';
   $('wmInput').value = String(ctx.value == null ? 0 : ctx.value);
   $('writeModal').classList.add('show');
   updateWmFrame();
@@ -2033,12 +2042,9 @@ function sheetSubmit() {
 function applyTheme(theme) {
   const t = theme === 'light' ? 'light' : 'dark';
   document.body.setAttribute('data-theme', t);
-  $('themeBtn').textContent = '主题：' + (t === 'light' ? '浅色同源' : '深色工业台');
+  const cb = $('cfgLight');
+  if (cb) cb.checked = (t === 'light');
   try { localStorage.setItem(LS_THEME, t); } catch (e) {}
-}
-
-function toggleTheme() {
-  applyTheme(document.body.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
 }
 
 /* ---- Broker 设置弹窗 ---- */
@@ -2047,6 +2053,7 @@ function openSettings() {
   $('cfgHost').value = c.host || MQTT_SERVER.host;
   $('cfgUser').value = c.username || MQTT_SERVER.username;
   $('cfgPass').value = c.password || '';
+  $('cfgLight').checked = document.body.getAttribute('data-theme') === 'light';
   $('settingsErr').textContent = '';
   $('settingsMask').classList.add('show');
 }
@@ -2061,9 +2068,10 @@ function saveSettings() {
   if (username !== MQTT_SERVER.username) cfg.username = username;
   if (password !== '') cfg.password = password;
   saveBroker(cfg);
+  applyTheme($('cfgLight').checked ? 'light' : 'dark');
   closeSettings();
   refreshBrokerText();
-  setNotice('Broker 设置已保存，重启会话后生效', true);
+  setNotice('设置已保存，重启会话后生效', true);
 }
 
 /** 标题栏的 broker 摘要：未配置时提示去设置，避免显示一个空 URL */
@@ -2086,56 +2094,17 @@ function bind() {
     if (!app.joined) { setNotice('先接入会话'); return; }
     send('sync.request', {}, { okTitle: '已重新同步', timeout: 8000 }).then(onSyncData).catch(() => {});
   });
-  $('btnFieldBack').addEventListener('click', () => {
-    if (!app.joined) return;
-    if (gwReady()) { setNotice(gwLinkShort() + ' 没有"现场页面"可返回', true); return; }
-    send('nav.back', {}, { okTitle: '现场已返回' }).catch(() => {});
-  });
-  $('btnNotifyFieldPage').addEventListener('click', () => {
-    if (!app.joined) { setNotice('先接入会话'); return; }
-    if (gwReady()) {
-      if (gwLink() === 'ble') { sendViewFollow(app.activeTab); toast('已通知现场切到「' + TAB_LABEL[app.activeTab] + '」', true); return; }
-      setNotice(gwLinkShort() + ' 下页面只存在于桌面端', true);
-      return;
-    }
-    send('nav.open', { page: TAB_PAGE[app.activeTab] }, { okTitle: '已通知现场切到「' + TAB_LABEL[app.activeTab] + '」' }).catch(() => {});
-  });
-  $('btnPingField').addEventListener('click', () => {
-    if (!app.joined) return;
-    const t0 = performance.now();
-    send('ping', { t: Date.now() }, { noRetry: true, timeout: 5000 }).then((d) => {
-      const ms = Math.round(performance.now() - t0);
-      pushOp('ok', '唤醒 Ping 已回', 'RTT ' + ms + 'ms' + (d && d.pong ? ' · pong ' + d.pong : ''));
-      app.result = { text: 'PING OK (' + ms + 'ms)', ok: true };
-      renderStatusbar();
-    }).catch((e) => {
-      pushOp('err', 'Ping 无回应', e && e.message || '');
-      setNotice('现场仍未响应，确认模块是否在线');
-    });
-  });
-  $('btnDismissOffline').addEventListener('click', () => {
-    app.offlineDismissed = true;
-    $('offlineBanner').classList.remove('show');
-  });
   $('btnClearLogs').addEventListener('click', () => {
     app.packets = []; app.ops = [];
     app.txBytes = 0; app.rxBytes = 0;
     renderDock();
     pushOp('info', '已清空报文流与操作记录', '');
   });
-  $('themeBtn').addEventListener('click', toggleTheme);
   $('settingsBtn').addEventListener('click', openSettings);
   $('settingsClose').addEventListener('click', closeSettings);
   $('settingsSave').addEventListener('click', saveSettings);
   $('settingsMask').addEventListener('click', (e) => { if (e.target === $('settingsMask')) closeSettings(); });
   $('cfgPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveSettings(); });
-  $('btnToggleDockMode').addEventListener('click', () => {
-    app.dockMode = app.dockMode === 'split' ? 'pkt' : (app.dockMode === 'pkt' ? 'ops' : 'split');
-    renderDock();
-  });
-  document.querySelectorAll('#dockModeSeg .seg-i').forEach((b) => {
-    b.addEventListener('click', () => { app.dockMode = b.dataset.dmode; renderDock(); });
-  });
 
   // 报文流：点击复制
   $('packetList').addEventListener('click', (e) => {
@@ -2159,14 +2128,9 @@ function bind() {
   $('wmInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') wmConfirm(); });
   $('wmConfirm').addEventListener('click', wmConfirm);
   $('wmCancel').addEventListener('click', closeWriteModal);
-  $('wmClose').addEventListener('click', closeWriteModal);
   $('writeModal').addEventListener('click', (e) => { if (e.target === $('writeModal')) closeWriteModal(); });
-  document.querySelectorAll('.wm-quick').forEach((b) => {
-    b.addEventListener('click', () => { $('wmInput').value = b.dataset.v; updateWmFrame(); });
-  });
 
   // 值编辑弹层
-  $('sheetCancel').addEventListener('click', closeSheet);
   $('sheetCloseX').addEventListener('click', closeSheet);
   $('sheetMask').addEventListener('click', (e) => { if (e.target === $('sheetMask')) closeSheet(); });
   $('sheetSend').addEventListener('click', sheetSubmit);
@@ -2249,11 +2213,6 @@ function onStageClick(e) {
     case 'mod-seg':
       app.module.edit[el.dataset.k] = el.dataset.v;
       app.module.dirty = true;
-      renderStage();
-      break;
-    case 'mod-reset':
-      app.module.edit = Object.assign({}, app.module.cur);
-      app.module.dirty = false;
       renderStage();
       break;
     case 'mod-commit':
@@ -2361,6 +2320,8 @@ boot();
 if (typeof window !== 'undefined') {
   window.__mrd = {
     app, onJoin, send, P, pushOp, renderAll,
+    // 调试 / 单测：网关说明书新字段合并
+    gateway: { ensure: ensureGateway, apply: applyGatewayDetail },
     // 调试 / 单测：页面双向同步的字段映射
     view: {
       snapshot: desktopViewSnapshot,

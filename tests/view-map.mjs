@@ -157,5 +157,40 @@ app.viewRev = 0;
 view.applyHost({ page: 'rtu', source: 'desktop', rev: 5, data: {} });
 assert.equal(app.activeTab, 'serial', 'source=desktop 的回显不套用');
 
+/* ---------------- 网关 v2.2 新信息 ---------------- */
+window.__mrd.gateway.apply({
+  role: 'gateway', gateway: 'SYCC-GW', fw: '2.2', nvs: 1,
+  ip: '192.168.1.23', ssid: 'office', broker: 'app.modbus.cn',
+  pin: '192.168.1.9', mode: 3, up: 754, rssi: -62,
+  cred: 1, auto: 1, wifi: 1, mqtt: 1, remote: 1,
+  uart: { baud: 19200, dataBits: 8, stopBits: 1, parity: 'E' }
+});
+assert.equal(app.gw.nvs, 1);
+assert.equal(app.gw.ssid, 'office');
+assert.equal(app.gw.broker, 'app.modbus.cn');
+assert.equal(app.gw.pin, '192.168.1.9');
+assert.equal(app.gw.mode, 3);
+assert.equal(app.gw.up, 754);
+assert.equal(app.gw.rssi, -62);
+assert.equal(app.gw.cred, true);
+assert.equal(app.gw.auto, true);
+assert.equal(app.gw.wifi, true);
+assert.equal(app.gw.mqtt, true);
+assert.equal(app.gw.remote, true);
+console.log('✓ 网关 v2.2 新信息映射：NVS / SSID / broker / PIN / 模式 / RSSI 全部通过');
+/* ---------------- 所有视图渲染冒烟 ---------------- */
+for (const tab of ['tools', 'scan', 'modscan', 'serial', 'rtu', 'module']) {
+  app.activeTab = tab;
+  window.__mrd.renderAll();
+}
+console.log('✓ 六个工作台视图渲染通过');
+app.activeTab = 'module';
+window.__mrd.renderAll();
+assert.match(document.getElementById('mainStage').innerHTML, /NVS/);
+assert.match(document.getElementById('mainStage').innerHTML, /office/);
+assert.match(document.getElementById('mainStage').innerHTML, /app\.modbus\.cn/);
+console.log('✓ 模块信息新字段渲染通过');
+
+
 console.log('✓ 页面同步字段映射：scan / modscan / serial / rtu / uart 全部通过');
 process.exit(0);
