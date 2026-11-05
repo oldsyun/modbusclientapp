@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/style.css" />
+  <title>Modbus 远程调试台</title>
+</head>
+<body data-theme="dark">
+  <div id="app" class="desktop-win">
+
+    <!-- ===================== 2. 顶部深色链路带 ===================== -->
+    <header class="app-header">
+      <div class="ah-left">
+        <div class="session-box">
+          <span class="session-lbl">协助码</span>
+          <input id="sidInput" class="session-code" maxlength="7" placeholder="AB3D9KX"
+                 autocomplete="off" spellcheck="false" title="输入现场给出的 7 位协助码" />
+          <button id="joinBtn" class="session-btn">接入</button>
+          <button id="leaveBtn" class="session-btn" hidden>断开</button>
+          <span id="sidErr" class="session-err"></span>
+        </div>
+
+        <!-- 多远程端：同一条会话可以同时有网页端 + 小程序（桌面端），只有一个控制端 -->
+        <div id="roleBox" class="role-box" hidden>
+          <span id="pillRole" class="t-pill"><span class="dot"></span><span id="txtRole">控制端</span></span>
+          <button id="takeoverBtn" class="session-btn" hidden>请求接管</button>
+        </div>
+
+        <div class="telemetry-strip">
+          <span id="pillServer" class="t-pill"><span class="dot"></span><span id="txtServer">未连接</span></span>
+          <span id="pillField" class="t-pill"><span class="dot"></span><span id="txtFieldStatus">现场离线</span></span>
+          <span id="pillUart" class="t-pill"><span class="mono" id="hdrUartSummary">485: —</span></span>
+          <span id="pillCfg" class="t-pill"><span class="mono" id="hdrCfgSummary">NVS: —</span></span>
+        </div>
+      </div>
+
+      <div class="ah-right">
+        <button id="btnResync" class="hdr-btn">同步</button>
+        <button id="settingsBtn" class="hdr-btn" title="Broker 账号 / 密码 / 主题设置">mqtt设置</button>
+      </div>
+    </header>
+
+    <!-- ===================== 3. 二级工具坞导航 ===================== -->
+    <div class="sub-navbar">
+      <div id="navTabs" class="nav-tabs"></div>
+      <div class="sync-indicator">
+        <span class="sync-badge">
+          现场模块: <b class="mono" id="syncBleName">—</b>
+          <span style="opacity:.4">|</span>
+          现场页面: <b id="syncFieldPage">—</b>
+        </span>
+      </div>
+    </div>
+
+    <!-- 现场离线全局可恢复横幅 -->
+    <div id="offlineBanner" class="offline-banner">
+      <div class="ob-left">
+        <span class="ob-mark">!</span>
+        <div>
+          <b id="offlineTitle">现场暂未响应</b>
+          <span id="offlineText" style="margin-left:8px;opacity:.85">现场暂未响应。</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 4. 主体双栏工作台 ===================== -->
+    <div id="workbenchBody" class="workbench-body">
+      <div id="mainStage" class="main-stage"></div>
+
+      <aside class="telemetry-dock">
+        <div class="dock-header">
+          <div class="dock-title">报文与操作记录</div>
+          <button id="btnClearLogs" class="btn sm">清空</button>
+        </div>
+
+        <div class="dock-tabs">
+          <button id="dockTabPackets" class="dock-tab on" type="button">
+            报文流 <b id="pktCountBadge">0</b>
+          </button>
+          <button id="dockTabOps" class="dock-tab" type="button">
+            操作记录 <b id="opsCountBadge">0</b>
+          </button>
+        </div>
+
+        <div class="dock-body">
+          <div id="panePackets" class="dock-pane">
+            <div class="pane-bar">
+              <span>485 报文流</span>
+              <span class="mono" style="font-size:11px">
+                <span style="color:var(--tx)">TX <b id="statTxBytes">0</b>B</span> ·
+                <span style="color:var(--rx)">RX <b id="statRxBytes">0</b>B</span>
+              </span>
+            </div>
+            <div id="packetList" class="log-list"></div>
+          </div>
+
+          <div id="paneOps" class="dock-pane">
+            <div class="pane-bar">
+              <span>操作记录</span>
+              <span class="dock-meta">最新在上</span>
+            </div>
+            <div id="opLogList" class="log-list"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- ===================== 5. 底部状态与指令回执栏 ===================== -->
+    <footer class="app-statusbar">
+      <div class="sb-left"></div>
+      <div class="sb-right">
+        <span class="sb-kv">result: <b class="ok" id="sbResultText">—</b></span>
+      </div>
+    </footer>
+
+    <!-- ===================== 写入确认弹窗（Modscan / RTU 共用） ===================== -->
+    <div id="writeModal" class="modal-mask">
+      <div class="modal-card">
+        <div class="w-card-hd">
+          <div id="wmTitle" class="w-card-title">写入保持寄存器</div>
+        </div>
+        <div class="w-card-bd" style="display:flex;flex-direction:column;gap:12px">
+          <div id="wmSub" style="font-size:12px;color:var(--ink-2)">—</div>
+          <div class="f-item">
+            <div class="f-label"><span>写入新值（十进制或 0x 十六进制）</span><span class="tag danger">高危 · 写后读回</span></div>
+            <input id="wmInput" class="ipt mono" value="0" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="frame-box">
+            <span>将下发帧（含 CRC16）:</span>
+            <b id="wmFramePreview" class="mono">—</b>
+          </div>
+        </div>
+        <div class="w-card-ft">
+          <div style="display:flex;gap:8px;width:100%;justify-content:flex-end">
+            <button id="wmCancel" class="btn sm">取消</button>
+            <button id="wmConfirm" class="btn sm danger">下发写入指令</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 值编辑弹层（镜像页 fallback / 串口参数） ===================== -->
+    <div id="sheetMask" class="modal-mask">
+      <div class="modal-card">
+        <div class="w-card-hd">
+          <div id="sheetTitle" class="w-card-title">修改参数</div>
+        </div>
+        <div class="w-card-bd" style="display:flex;flex-direction:column;gap:10px">
+          <div id="sheetHint" style="font-size:12px;color:var(--ink-2)"></div>
+          <div id="sheetOptions" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <input id="sheetInput" class="ipt mono" autocomplete="off" spellcheck="false" />
+          <div id="sheetErr" class="f-hint" style="color:var(--danger)"></div>
+        </div>
+        <div class="w-card-ft">
+          <div style="display:flex;gap:8px;width:100%;justify-content:flex-end">
+            <button id="sheetCloseX" class="btn sm">取消</button>
+            <button id="sheetSend" class="btn sm primary">发给现场</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== Broker 设置弹窗（账号 / 密码，凭据存本机） ===================== -->
+    <div id="settingsMask" class="modal-mask">
+      <div class="modal-card">
+        <div class="w-card-hd">
+          <div id="settingsTitle" class="w-card-title">Broker 连接设置</div>
+          <button id="settingsClose" class="btn sm">关闭</button>
+        </div>
+        <div class="w-card-bd" style="display:flex;flex-direction:column;gap:10px">
+          <div id="settingsHint" style="font-size:12px;color:var(--ink-2)">凭据只保存在本机。</div>
+          <div class="f-item">
+            <div class="f-label"><span>服务器地址（host）</span></div>
+            <input id="cfgHost" class="ipt mono" autocomplete="off" spellcheck="false" placeholder="broker.example.com" />
+          </div>
+          <div class="f-item">
+            <div class="f-label"><span>账号（username）</span></div>
+            <input id="cfgUser" class="ipt mono" autocomplete="off" spellcheck="false" placeholder="mqtt-user" />
+          </div>
+          <div class="f-item">
+            <div class="f-label"><span>密码（password）</span></div>
+            <input id="cfgPass" class="ipt mono" type="password" autocomplete="off" spellcheck="false" placeholder="留空则默认空密码" />
+          </div>
+          <label class="f-item" style="flex-direction:row;align-items:center;gap:10px">
+            <input id="cfgLight" type="checkbox" />
+            <span style="font-size:12px;color:var(--ink-2)">浅色主题</span>
+          </label>
+          <div id="settingsErr" class="f-hint" style="color:var(--danger)"></div>
+        </div>
+        <div class="w-card-ft">
+          <div style="display:flex;gap:8px;width:100%;justify-content:flex-end">
+            <button id="settingsSave" class="btn sm primary">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 协助码 dialog（启动弹出） ===================== -->
+    <div id="assistCodeMask" class="modal-mask">
+      <div class="modal-card">
+        <div class="w-card-hd">
+          <div class="w-card-title">输入协助码</div>
+        </div>
+        <div class="w-card-bd" style="display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:12px;color:var(--ink-2)">请向现场人员索取 7 位协助码后输入，即可接入远程协助。</div>
+          <input id="assistCodeInput" class="ipt mono session-code" maxlength="7" placeholder="AB3D9KX" autocomplete="off" spellcheck="false" style="width:100%" />
+          <div id="assistCodeErr" class="f-hint" style="color:var(--danger)"></div>
+        </div>
+        <div class="w-card-ft">
+          <div style="display:flex;gap:8px;width:100%;justify-content:flex-end;align-items:center">
+            <button id="assistCodeLater" class="btn sm" style="margin-right:auto">稍后</button>
+            <button id="assistCodeGo" class="btn sm primary">进入工作台</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "modbus-remote-desktop",
+  "productName": "Modbus Remote Bench",
+  "version": "2.5.0",
+  "description": "ESP32 485 远程协助桌面客户端（MQTT 远程调试台，小程序远程端复刻）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "node --test tests/*.test.js && node tests/view-map.mjs && node tests/e2e.gateway.mjs && node tests/e2e.bleproxy.mjs && npm run test:web",
+    "build:web": "vite build --mode web",
+    "preview:web": "vite preview --mode web",
+    "test:web": "vite build --mode web && node tests/web-smoke.mjs",
+    "lint": "eslint \"src/**/*.js\" \"vite.config.js\" \"tests/**/*.{js,mjs}\"",
+    "format": "prettier --write \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" \"*.{js,json,md}\"",
+    "format:check": "prettier --check \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\""
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "vite": "^8.3.5"
+  }
+}
